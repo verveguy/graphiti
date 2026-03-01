@@ -186,6 +186,7 @@ async def edge_fulltext_search(
     group_ids: list[str] | None = None,
     limit=RELEVANT_SCHEMA_LIMIT,
 ) -> list[EntityEdge]:
+    start = time()
     if driver.search_interface:
         return await driver.search_interface.edge_fulltext_search(
             driver, query, search_filter, group_ids, limit
@@ -291,6 +292,7 @@ async def edge_fulltext_search(
 
     edges = [get_entity_edge_from_record(record, driver.provider) for record in records]
 
+    logger.debug(f'edge_fulltext_search completed in {(time() - start) * 1000:.1f} ms')
     return edges
 
 
@@ -304,6 +306,7 @@ async def edge_similarity_search(
     limit: int = RELEVANT_SCHEMA_LIMIT,
     min_score: float = DEFAULT_MIN_SCORE,
 ) -> list[EntityEdge]:
+    start = time()
     if driver.search_interface:
         return await driver.search_interface.edge_similarity_search(
             driver,
@@ -476,6 +479,7 @@ async def edge_similarity_search(
 
     edges = [get_entity_edge_from_record(record, driver.provider) for record in records]
 
+    logger.debug(f'edge_similarity_search completed in {(time() - start) * 1000:.1f} ms')
     return edges
 
 
@@ -617,6 +621,7 @@ async def node_fulltext_search(
     group_ids: list[str] | None = None,
     limit=RELEVANT_SCHEMA_LIMIT,
 ) -> list[EntityNode]:
+    start = time()
     if driver.search_interface:
         return await driver.search_interface.node_fulltext_search(
             driver, query, search_filter, group_ids, limit
@@ -700,6 +705,7 @@ async def node_fulltext_search(
 
     nodes = [get_entity_node_from_record(record, driver.provider) for record in records]
 
+    logger.debug(f'node_fulltext_search completed in {(time() - start) * 1000:.1f} ms')
     return nodes
 
 
@@ -711,6 +717,7 @@ async def node_similarity_search(
     limit=RELEVANT_SCHEMA_LIMIT,
     min_score: float = DEFAULT_MIN_SCORE,
 ) -> list[EntityNode]:
+    start = time()
     if driver.search_interface:
         return await driver.search_interface.node_similarity_search(
             driver, search_vector, search_filter, group_ids, limit, min_score
@@ -853,6 +860,7 @@ async def node_similarity_search(
 
     nodes = [get_entity_node_from_record(record, driver.provider) for record in records]
 
+    logger.debug(f'node_similarity_search completed in {(time() - start) * 1000:.1f} ms')
     return nodes
 
 
@@ -1134,6 +1142,7 @@ async def community_similarity_search(
     limit=RELEVANT_SCHEMA_LIMIT,
     min_score=DEFAULT_MIN_SCORE,
 ) -> list[CommunityNode]:
+    start = time()
     if driver.search_interface:
         try:
             return await driver.search_interface.community_similarity_search(
@@ -1279,6 +1288,7 @@ async def community_similarity_search(
 
     communities = [get_community_node_from_record(record) for record in records]
 
+    logger.debug(f'community_similarity_search completed in {(time() - start) * 1000:.1f} ms')
     return communities
 
 
