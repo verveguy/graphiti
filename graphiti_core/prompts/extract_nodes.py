@@ -315,6 +315,13 @@ If an entity has no relevant information in the messages and no existing summary
     ]
 
 
+def _strip_xml_tags(text: str) -> str:
+    """Strip XML-like tags from text to prevent prompt injection via delimiter escape."""
+    import re
+
+    return re.sub(r'</?[A-Z_]+\s*>', '', text)
+
+
 def reclassify_entity(context: dict[str, Any]) -> list[Message]:
     sys_prompt = (
         'You are an AI assistant that classifies entities into semantic ontological types. '
@@ -322,13 +329,16 @@ def reclassify_entity(context: dict[str, Any]) -> list[Message]:
         'Return a single PascalCase type name that best describes the entity.'
     )
 
+    entity_name = _strip_xml_tags(str(context['entity_name']))
+    entity_summary = _strip_xml_tags(str(context['entity_summary']))
+
     user_prompt = f"""
 <ENTITY NAME>
-{context['entity_name']}
+{entity_name}
 </ENTITY NAME>
 
 <ENTITY SUMMARY>
-{context['entity_summary']}
+{entity_summary}
 </ENTITY SUMMARY>
 
 Classify this entity into a single semantic type. Choose a meaningful ontological type such as:

@@ -597,6 +597,10 @@ class TestSanitizeLabel:
     def test_normalizes_all_caps_with_underscores(self):
         assert _sanitize_label('PERSON_NAME') == 'PersonName'
 
+    def test_underscore_only_returns_entity(self):
+        assert _sanitize_label('_') == 'Entity'
+        assert _sanitize_label('__') == 'Entity'
+
 
 class TestReclassifyEntity:
     @pytest.mark.asyncio

@@ -696,22 +696,16 @@ def _sanitize_label(label: str) -> str:
     # Remove any characters that aren't alphanumeric or underscore
     sanitized = re.sub(r'[^a-zA-Z0-9_]', '', label)
 
-    # If nothing remains after stripping, use the generic label
-    if not sanitized:
+    # Split on underscores to find word boundaries, filtering empty parts
+    parts = [p for p in sanitized.split('_') if p]
+
+    if not parts:
         return 'Entity'
 
-    # Split on underscores to find word boundaries and normalize each part
-    parts = [p for p in re.split(r'[_]+', sanitized) if p]
-    if parts:
-        normalized = ''.join(
-            p[0].upper() + p[1:].lower() if len(p) > 1 else p.upper() for p in parts
-        )
-    else:
-        normalized = (
-            sanitized[0].upper() + sanitized[1:].lower()
-            if len(sanitized) > 1
-            else sanitized.upper()
-        )
+    # Normalize to PascalCase
+    normalized = ''.join(
+        p[0].upper() + p[1:].lower() if len(p) > 1 else p.upper() for p in parts
+    )
 
     # Ensure it starts with a letter (prepend 'Label' if it starts with a digit)
     if normalized and normalized[0].isdigit():
