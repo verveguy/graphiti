@@ -37,6 +37,14 @@ class ExtractedEntities(BaseModel):
     extracted_entities: list[ExtractedEntity] = Field(..., description='List of extracted entities')
 
 
+class ReclassifiedEntity(BaseModel):
+    entity_type: str = Field(
+        ...,
+        description='The classified entity type as a PascalCase string'
+        ' (e.g., Person, Organization, Concept)',
+    )
+
+
 class EntitySummary(BaseModel):
     summary: str = Field(..., description='Summary of the entity')
 
@@ -61,6 +69,7 @@ class Prompt(Protocol):
     extract_attributes: PromptVersion
     extract_summary: PromptVersion
     extract_summaries_batch: PromptVersion
+    reclassify_entity: PromptVersion
 
 
 class Versions(TypedDict):
@@ -71,6 +80,7 @@ class Versions(TypedDict):
     extract_attributes: PromptFunction
     extract_summary: PromptFunction
     extract_summaries_batch: PromptFunction
+    reclassify_entity: PromptFunction
 
 
 def extract_message(context: dict[str, Any]) -> list[Message]:
@@ -305,6 +315,37 @@ If an entity has no relevant information in the messages and no existing summary
     ]
 
 
+def reclassify_entity(context: dict[str, Any]) -> list[Message]:
+    sys_prompt = (
+        'You are an AI assistant that classifies entities into semantic ontological types. '
+        'Given an entity name and its summary, determine the most appropriate type for the entity. '
+        'Return a single PascalCase type name that best describes the entity.'
+    )
+
+    user_prompt = f"""
+<ENTITY NAME>
+{context['entity_name']}
+</ENTITY NAME>
+
+<ENTITY SUMMARY>
+{context['entity_summary']}
+</ENTITY SUMMARY>
+
+Classify this entity into a single semantic type. Choose a meaningful ontological type such as:
+Person, Organization, Location, Event, Concept, Technology, Product, Document, Project, etc.
+
+Guidelines:
+1. Return exactly one PascalCase type name (e.g., "Person", "Organization", "Concept").
+2. Choose the most specific applicable type — prefer "Person" over "Entity" when the entity is clearly a person.
+3. If the entity cannot be meaningfully classified beyond "Entity", return "Entity".
+4. Do not invent overly specific or compound types — keep types general and reusable.
+"""
+    return [
+        Message(role='system', content=sys_prompt),
+        Message(role='user', content=user_prompt),
+    ]
+
+
 versions: Versions = {
     'extract_message': extract_message,
     'extract_json': extract_json,
@@ -313,4 +354,5 @@ versions: Versions = {
     'extract_summaries_batch': extract_summaries_batch,
     'classify_nodes': classify_nodes,
     'extract_attributes': extract_attributes,
+    'reclassify_entity': reclassify_entity,
 }
