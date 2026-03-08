@@ -17,7 +17,7 @@ limitations under the License.
 import logging
 from collections.abc import Awaitable, Callable
 from time import time
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -96,27 +96,34 @@ async def extract_nodes(
 
     # Extract entities
     if use_freeform:
-        extracted_entities_freeform = await _extract_nodes_single_freeform(
-            llm_client, episode, context
-        )
-        filtered_freeform = [e for e in extracted_entities_freeform if e.name.strip()]
-        end = time()
-        logger.debug(
-            f'Extracted {len(filtered_freeform)} entities (freeform) '
-            f'in {(end - start) * 1000:.0f} ms'
-        )
+        raw_entities = await _extract_nodes_single_freeform(llm_client, episode, context)
+        log_suffix = ' (freeform)'
+    else:
+        raw_entities = await _extract_nodes_single(llm_client, episode, context)
+        log_suffix = ''
+
+    # Filter empty names
+    filtered_entities = [e for e in raw_entities if e.name.strip()]
+
+    end = time()
+    logger.debug(
+        f'Extracted {len(filtered_entities)} entities{log_suffix} '
+        f'in {(end - start) * 1000:.0f} ms'
+    )
+
+    # Convert to EntityNode objects
+    if use_freeform:
         extracted_nodes = _create_entity_nodes_freeform(
-            filtered_freeform, excluded_entity_types, episode
+            cast(list[ExtractedEntityFreeform], filtered_entities),
+            excluded_entity_types,
+            episode,
         )
     else:
-        extracted_entities = await _extract_nodes_single(llm_client, episode, context)
-        filtered_entities = [e for e in extracted_entities if e.name.strip()]
-        end = time()
-        logger.debug(
-            f'Extracted {len(filtered_entities)} entities in {(end - start) * 1000:.0f} ms'
-        )
         extracted_nodes = _create_entity_nodes(
-            filtered_entities, entity_types_context, excluded_entity_types, episode
+            cast(list[ExtractedEntity], filtered_entities),
+            entity_types_context,
+            excluded_entity_types,
+            episode,
         )
 
     logger.debug(f'Extracted nodes: {[n.uuid for n in extracted_nodes]}')
@@ -240,6 +247,18 @@ def _create_entity_nodes(
     return extracted_nodes
 
 
+def _sanitize_label(label: str) -> str:
+    """Sanitize a freeform entity type label for safe use as a graph database label.
+
+    Replaces spaces with underscores and strips non-alphanumeric characters
+    to prevent Cypher injection and invalid label syntax.
+    """
+    # Replace spaces with underscores, then keep only alphanumeric + underscore
+    sanitized = label.replace(' ', '_')
+    sanitized = ''.join(c for c in sanitized if c.isalnum() or c == '_')
+    return sanitized.strip('_') or 'Entity'
+
+
 def _create_entity_nodes_freeform(
     extracted_entities: list[ExtractedEntityFreeform],
     excluded_entity_types: list[str] | None,
@@ -249,7 +268,7 @@ def _create_entity_nodes_freeform(
     extracted_nodes = []
 
     for extracted_entity in extracted_entities:
-        entity_type_name = extracted_entity.entity_type.strip() or 'Entity'
+        entity_type_name = _sanitize_label(extracted_entity.entity_type)
 
         # Check if this entity type should be excluded
         if excluded_entity_types and entity_type_name in excluded_entity_types:
