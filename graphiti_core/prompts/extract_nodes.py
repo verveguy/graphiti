@@ -36,8 +36,11 @@ class ExtractedEntity(BaseModel):
 class ExtractedEntityFreeform(BaseModel):
     name: str = Field(..., description='Name of the extracted entity')
     entity_type: str = Field(
-        description='The semantic type of the entity (e.g., Person, Organization, Software, '
-        'Concept, Location, Event, Document). Use a concise, capitalized label.',
+        description='The ontological type that best describes this entity. '
+        'Use a concise, capitalized, single-word label. '
+        'You are free to use any type that fits — common examples include '
+        'Person, Organization, Software, Concept, Location, Event, Award, '
+        'Book, Technology, but use whatever label best captures the entity.',
     )
 
 
@@ -91,8 +94,9 @@ def _entity_type_classification_instructions(context: dict[str, Any]) -> str:
     """Generate entity classification instructions based on whether custom types are provided."""
     if context.get('freeform_entity_types'):
         return """3. **Entity Classification**:
-   - Assign a semantic `entity_type` label that best describes each entity (e.g., Person, Organization, Software, Concept, Location, Event, Document, Team, Project).
-   - Use concise, capitalized labels. Prefer common ontological categories."""
+   - Assign an `entity_type` label that best describes each entity's ontological category.
+   - Use any type that fits — you are not limited to a fixed set. Choose the most descriptive and specific label.
+   - Use concise, capitalized, single-word labels (e.g., Person, Book, Award, Technology, Methodology)."""
     else:
         return """3. **Entity Classification**:
    - Use the descriptions in ENTITY TYPES to classify each extracted entity.
@@ -103,8 +107,9 @@ def _classification_instruction_inline(context: dict[str, Any]) -> str:
     """Generate inline classification instruction for extract_json and extract_text prompts."""
     if context.get('freeform_entity_types'):
         return (
-            'For each entity extracted, assign a semantic `entity_type` label that best describes it '
-            '(e.g., Person, Organization, Software, Concept, Location, Event, Document).'
+            'For each entity extracted, assign an `entity_type` label that best describes its '
+            'ontological category. Use any type that fits — you are not limited to a fixed set. '
+            'Use concise, capitalized, single-word labels.'
         )
     return (
         'For each entity extracted, also determine its entity type based on the provided ENTITY TYPES '
