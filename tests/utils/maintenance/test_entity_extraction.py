@@ -25,6 +25,7 @@ from graphiti_core.utils.datetime_utils import utc_now
 from graphiti_core.utils.maintenance.node_operations import (
     _build_entity_types_context,
     _extract_entity_summaries_batch,
+    _sanitize_label,
     extract_nodes,
 )
 
@@ -67,14 +68,18 @@ def _make_episode(
 class TestExtractNodesSmallInput:
     @pytest.mark.asyncio
     async def test_small_input_single_llm_call(self, monkeypatch):
-        """Small inputs should use a single LLM call without chunking."""
+        """Small inputs should use a single LLM call without chunking.
+
+        When no entity_types are provided, freeform mode is used,
+        so mock responses use entity_type (str) instead of entity_type_id (int).
+        """
         clients, llm_generate = _make_clients()
 
-        # Mock LLM response
+        # Mock LLM response (freeform mode — no entity_types provided)
         llm_generate.return_value = {
             'extracted_entities': [
-                {'name': 'Alice', 'entity_type_id': 0},
-                {'name': 'Bob', 'entity_type_id': 0},
+                {'name': 'Alice', 'entity_type': 'Person'},
+                {'name': 'Bob', 'entity_type': 'Person'},
             ]
         }
 
@@ -90,6 +95,10 @@ class TestExtractNodesSmallInput:
         # Verify results
         assert len(nodes) == 2
         assert {n.name for n in nodes} == {'Alice', 'Bob'}
+        # Both should have Person label from freeform classification
+        for node in nodes:
+            assert 'Person' in node.labels
+            assert 'Entity' in node.labels
 
         # LLM should be called exactly once
         llm_generate.assert_awaited_once()
@@ -168,11 +177,12 @@ class TestExtractNodesSmallInput:
         """Entities with empty names should be filtered out."""
         clients, llm_generate = _make_clients()
 
+        # Freeform mode (no entity_types provided)
         llm_generate.return_value = {
             'extracted_entities': [
-                {'name': 'Alice', 'entity_type_id': 0},
-                {'name': '', 'entity_type_id': 0},
-                {'name': '   ', 'entity_type_id': 0},
+                {'name': 'Alice', 'entity_type': 'Person'},
+                {'name': '', 'entity_type': 'Person'},
+                {'name': '   ', 'entity_type': 'Concept'},
             ]
         }
 
@@ -228,6 +238,46 @@ class TestExtractNodesPromptSelection:
 
         call_kwargs = llm_generate.call_args[1]
         assert call_kwargs.get('prompt_name') == 'extract_nodes.extract_message'
+
+    @pytest.mark.asyncio
+    async def test_freeform_uses_correct_response_model(self, monkeypatch):
+        """Freeform mode should use ExtractedEntitiesFreeform response model."""
+        from graphiti_core.prompts.extract_nodes import ExtractedEntitiesFreeform
+
+        clients, llm_generate = _make_clients()
+        llm_generate.return_value = {'extracted_entities': []}
+
+        episode = _make_episode(source=EpisodeType.text)
+
+        # No entity_types = freeform mode
+        await extract_nodes(clients, episode, previous_episodes=[])
+
+        call_kwargs = llm_generate.call_args[1]
+        assert call_kwargs.get('response_model') is ExtractedEntitiesFreeform
+
+    @pytest.mark.asyncio
+    async def test_constrained_uses_correct_response_model(self, monkeypatch):
+        """Constrained mode should use ExtractedEntities response model."""
+        from pydantic import BaseModel
+
+        from graphiti_core.prompts.extract_nodes import ExtractedEntities
+
+        class Person(BaseModel):
+            """A human person."""
+
+            pass
+
+        clients, llm_generate = _make_clients()
+        llm_generate.return_value = {'extracted_entities': []}
+
+        episode = _make_episode(source=EpisodeType.text)
+
+        await extract_nodes(
+            clients, episode, previous_episodes=[], entity_types={'Person': Person}
+        )
+
+        call_kwargs = llm_generate.call_args[1]
+        assert call_kwargs.get('response_model') is ExtractedEntities
 
 
 class TestBuildEntityTypesContext:
@@ -560,3 +610,100 @@ class TestExtractEntitySummariesBatch:
 
         # Should match despite case difference
         assert node.summary == 'Alice summary from LLM.'
+
+
+class TestFreeformEntityExtraction:
+    @pytest.mark.asyncio
+    async def test_freeform_assigns_semantic_labels(self):
+        """Freeform mode should assign LLM-provided type labels to entities."""
+        clients, llm_generate = _make_clients()
+
+        llm_generate.return_value = {
+            'extracted_entities': [
+                {'name': 'Alice', 'entity_type': 'Person'},
+                {'name': 'Acme Corp', 'entity_type': 'Organization'},
+                {'name': 'Python', 'entity_type': 'Software'},
+            ]
+        }
+
+        episode = _make_episode(content='Alice works at Acme Corp using Python.')
+
+        nodes = await extract_nodes(clients, episode, previous_episodes=[])
+
+        assert len(nodes) == 3
+        alice = next(n for n in nodes if n.name == 'Alice')
+        assert 'Person' in alice.labels
+        assert 'Entity' in alice.labels
+
+        acme = next(n for n in nodes if n.name == 'Acme Corp')
+        assert 'Organization' in acme.labels
+
+        python = next(n for n in nodes if n.name == 'Python')
+        assert 'Software' in python.labels
+
+    @pytest.mark.asyncio
+    async def test_freeform_excludes_entity_types(self):
+        """Freeform mode should support excluded_entity_types."""
+        clients, llm_generate = _make_clients()
+
+        llm_generate.return_value = {
+            'extracted_entities': [
+                {'name': 'Alice', 'entity_type': 'Person'},
+                {'name': 'Python', 'entity_type': 'Software'},
+            ]
+        }
+
+        episode = _make_episode(content='Alice uses Python.')
+
+        nodes = await extract_nodes(
+            clients,
+            episode,
+            previous_episodes=[],
+            excluded_entity_types=['Person'],
+        )
+
+        assert len(nodes) == 1
+        assert nodes[0].name == 'Python'
+
+    @pytest.mark.asyncio
+    async def test_freeform_empty_type_falls_back_to_entity(self):
+        """Empty or whitespace entity_type should fall back to 'Entity'."""
+        clients, llm_generate = _make_clients()
+
+        llm_generate.return_value = {
+            'extracted_entities': [
+                {'name': 'Alice', 'entity_type': ''},
+                {'name': 'Bob', 'entity_type': '   '},
+            ]
+        }
+
+        episode = _make_episode(content='Alice and Bob.')
+
+        nodes = await extract_nodes(clients, episode, previous_episodes=[])
+
+        assert len(nodes) == 2
+        for node in nodes:
+            assert node.labels == ['Entity']
+
+
+class TestSanitizeLabel:
+    def test_simple_label(self):
+        assert _sanitize_label('Person') == 'Person'
+
+    def test_spaces_replaced_with_underscores(self):
+        assert _sanitize_label('Machine Learning') == 'Machine_Learning'
+
+    def test_special_characters_removed(self):
+        assert _sanitize_label('Person:Malicious{uuid}') == 'PersonMaliciousuuid'
+
+    def test_cypher_injection_prevented(self):
+        assert _sanitize_label('Person}) DELETE n //') == 'Person_DELETE_n'
+
+    def test_empty_string_returns_entity(self):
+        assert _sanitize_label('') == 'Entity'
+
+    def test_only_special_chars_returns_entity(self):
+        assert _sanitize_label('!@#$%') == 'Entity'
+
+    def test_leading_trailing_underscores_stripped(self):
+        assert _sanitize_label(' _Person_ ') == 'Person'

@@ -17,7 +17,7 @@ limitations under the License.
 import logging
 from collections.abc import Awaitable, Callable
 from time import time
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -36,7 +36,9 @@ from graphiti_core.prompts import prompt_library
 from graphiti_core.prompts.dedupe_nodes import NodeDuplicate, NodeResolutions
 from graphiti_core.prompts.extract_nodes import (
     ExtractedEntities,
+    ExtractedEntitiesFreeform,
     ExtractedEntity,
+    ExtractedEntityFreeform,
     SummarizedEntities,
 )
 from graphiti_core.search.search import search
@@ -72,32 +74,57 @@ async def extract_nodes(
     start = time()
     llm_client = clients.llm_client
 
-    # Build entity types context
+    # Determine if we should use freeform entity type classification.
+    # When no custom entity_types are provided, we use freeform mode where
+    # the LLM assigns semantic type labels (e.g., Person, Software, Concept)
+    # rather than being constrained to a single generic "Entity" type.
+    use_freeform = entity_types is None
+
+    # Build entity types context (only used in non-freeform mode)
     entity_types_context = _build_entity_types_context(entity_types)
 
     # Build base context
-    context = {
+    context: dict[str, Any] = {
         'episode_content': episode.content,
         'episode_timestamp': episode.valid_at.isoformat(),
         'previous_episodes': [ep.content for ep in previous_episodes],
         'custom_extraction_instructions': custom_extraction_instructions or '',
         'entity_types': entity_types_context,
         'source_description': episode.source_description,
+        'freeform_entity_types': use_freeform,
     }
 
     # Extract entities
-    extracted_entities = await _extract_nodes_single(llm_client, episode, context)
+    if use_freeform:
+        raw_entities = await _extract_nodes_single_freeform(llm_client, episode, context)
+        log_suffix = ' (freeform)'
+    else:
+        raw_entities = await _extract_nodes_single(llm_client, episode, context)
+        log_suffix = ''
 
     # Filter empty names
-    filtered_entities = [e for e in extracted_entities if e.name.strip()]
+    filtered_entities = [e for e in raw_entities if e.name.strip()]
 
     end = time()
-    logger.debug(f'Extracted {len(filtered_entities)} entities in {(end - start) * 1000:.0f} ms')
+    logger.debug(
+        f'Extracted {len(filtered_entities)} entities{log_suffix} '
+        f'in {(end - start) * 1000:.0f} ms'
+    )
 
     # Convert to EntityNode objects
-    extracted_nodes = _create_entity_nodes(
-        filtered_entities, entity_types_context, excluded_entity_types, episode
-    )
+    if use_freeform:
+        extracted_nodes = _create_entity_nodes_freeform(
+            cast(list[ExtractedEntityFreeform], filtered_entities),
+            excluded_entity_types,
+            episode,
+        )
+    else:
+        extracted_nodes = _create_entity_nodes(
+            cast(list[ExtractedEntity], filtered_entities),
+            entity_types_context,
+            excluded_entity_types,
+            episode,
+        )
 
     logger.debug(f'Extracted nodes: {[n.uuid for n in extracted_nodes]}')
     return extracted_nodes
@@ -136,9 +163,20 @@ async def _extract_nodes_single(
     episode: EpisodicNode,
     context: dict,
 ) -> list[ExtractedEntity]:
-    """Extract entities using a single LLM call."""
-    llm_response = await _call_extraction_llm(llm_client, episode, context)
+    """Extract entities using a single LLM call with predefined entity types."""
+    llm_response = await _call_extraction_llm(llm_client, episode, context, freeform=False)
     response_object = ExtractedEntities(**llm_response)
+    return response_object.extracted_entities
+
+
+async def _extract_nodes_single_freeform(
+    llm_client: LLMClient,
+    episode: EpisodicNode,
+    context: dict,
+) -> list[ExtractedEntityFreeform]:
+    """Extract entities using a single LLM call with freeform type classification."""
+    llm_response = await _call_extraction_llm(llm_client, episode, context, freeform=True)
+    response_object = ExtractedEntitiesFreeform(**llm_response)
     return response_object.extracted_entities
 
 
@@ -146,6 +184,7 @@ async def _call_extraction_llm(
     llm_client: LLMClient,
     episode: EpisodicNode,
     context: dict,
+    freeform: bool = False,
 ) -> dict:
     """Call the appropriate extraction prompt based on episode type."""
     if episode.source == EpisodeType.message:
@@ -162,9 +201,11 @@ async def _call_extraction_llm(
         prompt = prompt_library.extract_nodes.extract_text(context)
         prompt_name = 'extract_nodes.extract_text'
 
+    response_model = ExtractedEntitiesFreeform if freeform else ExtractedEntities
+
     return await llm_client.generate_response(
         prompt,
-        response_model=ExtractedEntities,
+        response_model=response_model,
         group_id=episode.group_id,
         prompt_name=prompt_name,
     )
@@ -176,7 +217,7 @@ def _create_entity_nodes(
     excluded_entity_types: list[str] | None,
     episode: EpisodicNode,
 ) -> list[EntityNode]:
-    """Convert ExtractedEntity objects to EntityNode objects."""
+    """Convert ExtractedEntity objects to EntityNode objects (predefined types mode)."""
     extracted_nodes = []
 
     for extracted_entity in extracted_entities:
@@ -202,6 +243,49 @@ def _create_entity_nodes(
         )
         extracted_nodes.append(new_node)
         logger.debug(f'Created new node: {new_node.uuid}')
+
+    return extracted_nodes
+
+
+def _sanitize_label(label: str) -> str:
+    """Sanitize a freeform entity type label for safe use as a graph database label.
+
+    Replaces spaces with underscores and strips non-alphanumeric characters
+    to prevent Cypher injection and invalid label syntax.
+    """
+    # Replace spaces with underscores, then keep only alphanumeric + underscore
+    sanitized = label.replace(' ', '_')
+    sanitized = ''.join(c for c in sanitized if c.isalnum() or c == '_')
+    return sanitized.strip('_') or 'Entity'
+
+
+def _create_entity_nodes_freeform(
+    extracted_entities: list[ExtractedEntityFreeform],
+    excluded_entity_types: list[str] | None,
+    episode: EpisodicNode,
+) -> list[EntityNode]:
+    """Convert ExtractedEntityFreeform objects to EntityNode objects (freeform types mode)."""
+    extracted_nodes = []
+
+    for extracted_entity in extracted_entities:
+        entity_type_name = _sanitize_label(extracted_entity.entity_type)
+
+        # Check if this entity type should be excluded
+        if excluded_entity_types and entity_type_name in excluded_entity_types:
+            logger.debug(f'Excluding entity of type "{entity_type_name}"')
+            continue
+
+        labels: list[str] = list({'Entity', entity_type_name})
+
+        new_node = EntityNode(
+            name=extracted_entity.name,
+            group_id=episode.group_id,
+            labels=labels,
+            summary='',
+            created_at=utc_now(),
+        )
+        extracted_nodes.append(new_node)
+        logger.debug(f'Created new node: {new_node.uuid} (type: {entity_type_name})')
 
     return extracted_nodes
 

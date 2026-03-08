@@ -33,8 +33,22 @@ class ExtractedEntity(BaseModel):
     )
 
 
+class ExtractedEntityFreeform(BaseModel):
+    name: str = Field(..., description='Name of the extracted entity')
+    entity_type: str = Field(
+        description='The semantic type of the entity (e.g., Person, Organization, Software, '
+        'Concept, Location, Event, Document). Use a concise, capitalized label.',
+    )
+
+
 class ExtractedEntities(BaseModel):
     extracted_entities: list[ExtractedEntity] = Field(..., description='List of extracted entities')
+
+
+class ExtractedEntitiesFreeform(BaseModel):
+    extracted_entities: list[ExtractedEntityFreeform] = Field(
+        ..., description='List of extracted entities'
+    )
 
 
 class EntitySummary(BaseModel):
@@ -73,15 +87,47 @@ class Versions(TypedDict):
     extract_summaries_batch: PromptFunction
 
 
+def _entity_type_classification_instructions(context: dict[str, Any]) -> str:
+    """Generate entity classification instructions based on whether custom types are provided."""
+    if context.get('freeform_entity_types'):
+        return """3. **Entity Classification**:
+   - Assign a semantic `entity_type` label that best describes each entity (e.g., Person, Organization, Software, Concept, Location, Event, Document, Team, Project).
+   - Use concise, capitalized labels. Prefer common ontological categories."""
+    else:
+        return """3. **Entity Classification**:
+   - Use the descriptions in ENTITY TYPES to classify each extracted entity.
+   - Assign the appropriate `entity_type_id` for each one."""
+
+
+def _classification_instruction_inline(context: dict[str, Any]) -> str:
+    """Generate inline classification instruction for extract_json and extract_text prompts."""
+    if context.get('freeform_entity_types'):
+        return (
+            'For each entity extracted, assign a semantic `entity_type` label that best describes it '
+            '(e.g., Person, Organization, Software, Concept, Location, Event, Document).'
+        )
+    return (
+        'For each entity extracted, also determine its entity type based on the provided ENTITY TYPES '
+        'and their descriptions.\nIndicate the classified entity type by providing its entity_type_id.'
+    )
+
+
+def _entity_types_section(context: dict[str, Any]) -> str:
+    """Generate the ENTITY TYPES section, omitting it entirely for freeform mode."""
+    if context.get('freeform_entity_types'):
+        return ''
+    return f"""<ENTITY TYPES>
+{context['entity_types']}
+</ENTITY TYPES>
+"""
+
+
 def extract_message(context: dict[str, Any]) -> list[Message]:
-    sys_prompt = """You are an AI assistant that extracts entity nodes from conversational messages. 
+    sys_prompt = """You are an AI assistant that extracts entity nodes from conversational messages.
     Your primary task is to extract and classify the speaker and other significant entities mentioned in the conversation."""
 
     user_prompt = f"""
-<ENTITY TYPES>
-{context['entity_types']}
-</ENTITY TYPES>
-
+{_entity_types_section(context)}
 <PREVIOUS MESSAGES>
 {to_prompt_json([ep for ep in context['previous_episodes']])}
 </PREVIOUS MESSAGES>
@@ -93,7 +139,7 @@ def extract_message(context: dict[str, Any]) -> list[Message]:
 Instructions:
 
 You are given a conversation context and a CURRENT MESSAGE. Your task is to extract **entity nodes** mentioned **explicitly or implicitly** in the CURRENT MESSAGE.
-Pronoun references such as he/she/they or this/that/those should be disambiguated to the names of the 
+Pronoun references such as he/she/they or this/that/those should be disambiguated to the names of the
 reference entities. Only extract distinct entities from the CURRENT MESSAGE. Don't extract pronouns like you, me, he/she/they, we/us as entities.
 
 1. **Speaker Extraction**: Always extract the speaker (the part before the colon `:` in each dialogue line) as the first entity node.
@@ -103,9 +149,7 @@ reference entities. Only extract distinct entities from the CURRENT MESSAGE. Don
    - Extract all significant entities, concepts, or actors that are **explicitly or implicitly** mentioned in the CURRENT MESSAGE.
    - **Exclude** entities mentioned only in the PREVIOUS MESSAGES (they are for context only).
 
-3. **Entity Classification**:
-   - Use the descriptions in ENTITY TYPES to classify each extracted entity.
-   - Assign the appropriate `entity_type_id` for each one.
+{_entity_type_classification_instructions(context)}
 
 4. **Exclusions**:
    - Do NOT extract entities representing relationships or actions.
@@ -123,14 +167,13 @@ reference entities. Only extract distinct entities from the CURRENT MESSAGE. Don
 
 
 def extract_json(context: dict[str, Any]) -> list[Message]:
-    sys_prompt = """You are an AI assistant that extracts entity nodes from JSON. 
+    sys_prompt = """You are an AI assistant that extracts entity nodes from JSON.
     Your primary task is to extract and classify relevant entities from JSON files"""
 
-    user_prompt = f"""
-<ENTITY TYPES>
-{context['entity_types']}
-</ENTITY TYPES>
+    classification_instruction = _classification_instruction_inline(context)
 
+    user_prompt = f"""
+{_entity_types_section(context)}
 <SOURCE DESCRIPTION>:
 {context['source_description']}
 </SOURCE DESCRIPTION>
@@ -141,8 +184,7 @@ def extract_json(context: dict[str, Any]) -> list[Message]:
 {context['custom_extraction_instructions']}
 
 Given the above source description and JSON, extract relevant entities from the provided JSON.
-For each entity extracted, also determine its entity type based on the provided ENTITY TYPES and their descriptions.
-Indicate the classified entity type by providing its entity_type_id.
+{classification_instruction}
 
 Guidelines:
 1. Extract all entities that the JSON represents. This will often be something like a "name" or "user" field
@@ -156,21 +198,19 @@ Guidelines:
 
 
 def extract_text(context: dict[str, Any]) -> list[Message]:
-    sys_prompt = """You are an AI assistant that extracts entity nodes from text. 
+    sys_prompt = """You are an AI assistant that extracts entity nodes from text.
     Your primary task is to extract and classify the speaker and other significant entities mentioned in the provided text."""
 
-    user_prompt = f"""
-<ENTITY TYPES>
-{context['entity_types']}
-</ENTITY TYPES>
+    classification_instruction = _classification_instruction_inline(context)
 
+    user_prompt = f"""
+{_entity_types_section(context)}
 <TEXT>
 {context['episode_content']}
 </TEXT>
 
 Given the above text, extract entities from the TEXT that are explicitly or implicitly mentioned.
-For each entity extracted, also determine its entity type based on the provided ENTITY TYPES and their descriptions.
-Indicate the classified entity type by providing its entity_type_id.
+{classification_instruction}
 
 {context['custom_extraction_instructions']}
 
