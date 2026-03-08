@@ -689,18 +689,35 @@ def _build_episode_context(
 def _sanitize_label(label: str) -> str:
     """Sanitize a label string to be safe for use as a Cypher node label.
 
-    Strips non-alphanumeric/underscore characters and ensures the result
-    is a valid PascalCase identifier.
+    Strips non-alphanumeric/underscore characters, normalizes to PascalCase
+    (splitting on underscores), and ensures the result starts with a letter.
+    Falls back to 'Entity' if no valid characters remain.
     """
     # Remove any characters that aren't alphanumeric or underscore
     sanitized = re.sub(r'[^a-zA-Z0-9_]', '', label)
+
+    # If nothing remains after stripping, use the generic label
+    if not sanitized:
+        return 'Entity'
+
+    # Split on underscores to find word boundaries and normalize each part
+    parts = [p for p in re.split(r'[_]+', sanitized) if p]
+    if parts:
+        normalized = ''.join(
+            p[0].upper() + p[1:].lower() if len(p) > 1 else p.upper() for p in parts
+        )
+    else:
+        normalized = (
+            sanitized[0].upper() + sanitized[1:].lower()
+            if len(sanitized) > 1
+            else sanitized.upper()
+        )
+
     # Ensure it starts with a letter (prepend 'Label' if it starts with a digit)
-    if sanitized and sanitized[0].isdigit():
-        sanitized = 'Label' + sanitized
-    # Capitalize first letter to ensure PascalCase
-    if sanitized:
-        sanitized = sanitized[0].upper() + sanitized[1:]
-    return sanitized or 'Entity'
+    if normalized and normalized[0].isdigit():
+        normalized = 'Label' + normalized
+
+    return normalized or 'Entity'
 
 
 async def reclassify_entity(
@@ -738,7 +755,7 @@ async def reprocess_entity_types(
 
     # Retrieve all entities for the group, then filter in Python
     all_entities = await EntityNode.get_by_group_ids(driver, [group_id])
-    entities = [e for e in all_entities if len(e.labels) <= 1 or e.labels == ['Entity']]
+    entities = [e for e in all_entities if set(e.labels) == {'Entity'}]
 
     if not entities:
         logger.info(f'No untyped entities found for group_id={group_id}')

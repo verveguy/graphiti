@@ -574,13 +574,13 @@ class TestSanitizeLabel:
         assert _sanitize_label('person') == 'Person'
 
     def test_strips_special_characters(self):
-        assert _sanitize_label('My-Type!') == 'MyType'
+        assert _sanitize_label('My-Type!') == 'Mytype'
 
     def test_strips_spaces(self):
-        assert _sanitize_label('My Type') == 'MyType'
+        assert _sanitize_label('My Type') == 'Mytype'
 
     def test_digit_prefix_gets_label_prepended(self):
-        assert _sanitize_label('123Type') == 'Label123Type'
+        assert _sanitize_label('123Type') == 'Label123type'
 
     def test_empty_string_returns_entity(self):
         assert _sanitize_label('') == 'Entity'
@@ -588,8 +588,14 @@ class TestSanitizeLabel:
     def test_all_special_chars_returns_entity(self):
         assert _sanitize_label('!@#$%') == 'Entity'
 
-    def test_preserves_underscores(self):
-        assert _sanitize_label('My_Type') == 'My_Type'
+    def test_normalizes_underscored_parts_to_pascal_case(self):
+        assert _sanitize_label('My_Type') == 'MyType'
+
+    def test_normalizes_all_caps(self):
+        assert _sanitize_label('PERSON') == 'Person'
+
+    def test_normalizes_all_caps_with_underscores(self):
+        assert _sanitize_label('PERSON_NAME') == 'PersonName'
 
 
 class TestReclassifyEntity:
