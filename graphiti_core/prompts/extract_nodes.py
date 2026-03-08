@@ -99,6 +99,19 @@ def _entity_type_classification_instructions(context: dict[str, Any]) -> str:
    - Assign the appropriate `entity_type_id` for each one."""
 
 
+def _classification_instruction_inline(context: dict[str, Any]) -> str:
+    """Generate inline classification instruction for extract_json and extract_text prompts."""
+    if context.get('freeform_entity_types'):
+        return (
+            'For each entity extracted, assign a semantic `entity_type` label that best describes it '
+            '(e.g., Person, Organization, Software, Concept, Location, Event, Document).'
+        )
+    return (
+        'For each entity extracted, also determine its entity type based on the provided ENTITY TYPES '
+        'and their descriptions.\nIndicate the classified entity type by providing its entity_type_id.'
+    )
+
+
 def _entity_types_section(context: dict[str, Any]) -> str:
     """Generate the ENTITY TYPES section, omitting it entirely for freeform mode."""
     if context.get('freeform_entity_types'):
@@ -157,16 +170,7 @@ def extract_json(context: dict[str, Any]) -> list[Message]:
     sys_prompt = """You are an AI assistant that extracts entity nodes from JSON.
     Your primary task is to extract and classify relevant entities from JSON files"""
 
-    if context.get('freeform_entity_types'):
-        classification_instruction = (
-            'For each entity extracted, assign a semantic `entity_type` label that best describes it '
-            '(e.g., Person, Organization, Software, Concept, Location, Event, Document).'
-        )
-    else:
-        classification_instruction = (
-            'For each entity extracted, also determine its entity type based on the provided ENTITY TYPES '
-            'and their descriptions.\nIndicate the classified entity type by providing its entity_type_id.'
-        )
+    classification_instruction = _classification_instruction_inline(context)
 
     user_prompt = f"""
 {_entity_types_section(context)}
@@ -197,16 +201,7 @@ def extract_text(context: dict[str, Any]) -> list[Message]:
     sys_prompt = """You are an AI assistant that extracts entity nodes from text.
     Your primary task is to extract and classify the speaker and other significant entities mentioned in the provided text."""
 
-    if context.get('freeform_entity_types'):
-        classification_instruction = (
-            'For each entity extracted, assign a semantic `entity_type` label that best describes it '
-            '(e.g., Person, Organization, Software, Concept, Location, Event, Document).'
-        )
-    else:
-        classification_instruction = (
-            'For each entity extracted, also determine its entity type based on the provided ENTITY TYPES '
-            'and their descriptions.\nIndicate the classified entity type by providing its entity_type_id.'
-        )
+    classification_instruction = _classification_instruction_inline(context)
 
     user_prompt = f"""
 {_entity_types_section(context)}
