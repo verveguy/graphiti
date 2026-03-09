@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from time import time
 from typing import Any, cast
@@ -39,6 +40,7 @@ from graphiti_core.prompts.extract_nodes import (
     ExtractedEntitiesFreeform,
     ExtractedEntity,
     ExtractedEntityFreeform,
+    ReclassifiedEntity,
     SummarizedEntities,
 )
 from graphiti_core.search.search import search
@@ -245,18 +247,6 @@ def _create_entity_nodes(
         logger.debug(f'Created new node: {new_node.uuid}')
 
     return extracted_nodes
-
-
-def _sanitize_label(label: str) -> str:
-    """Sanitize a freeform entity type label for safe use as a graph database label.
-
-    Replaces spaces with underscores and strips non-alphanumeric characters
-    to prevent Cypher injection and invalid label syntax.
-    """
-    # Replace spaces with underscores, then keep only alphanumeric + underscore
-    sanitized = label.replace(' ', '_')
-    sanitized = ''.join(c for c in sanitized if c.isalnum() or c == '_')
-    return sanitized.strip('_') or 'Entity'
 
 
 def _create_entity_nodes_freeform(
@@ -767,3 +757,94 @@ def _build_episode_context(
             [ep.content for ep in previous_episodes] if previous_episodes is not None else []
         ),
     }
+
+
+def _sanitize_label(label: str) -> str:
+    """Sanitize a label string to be safe for use as a Cypher node label.
+
+    Strips non-alphanumeric/underscore characters, normalizes to PascalCase
+    (splitting on underscores), and ensures the result starts with a letter.
+    Falls back to 'Entity' if no valid characters remain.
+    """
+    # Remove any characters that aren't alphanumeric or underscore
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '', label)
+
+    # Split on underscores to find word boundaries, filtering empty parts
+    parts = [p for p in sanitized.split('_') if p]
+
+    if not parts:
+        return 'Entity'
+
+    # Normalize to PascalCase
+    normalized = ''.join(
+        p[0].upper() + p[1:].lower() if len(p) > 1 else p.upper() for p in parts
+    )
+
+    # Ensure it starts with a letter (prepend 'Label' if it starts with a digit)
+    if normalized and normalized[0].isdigit():
+        normalized = 'Label' + normalized
+
+    return normalized or 'Entity'
+
+
+async def reclassify_entity(
+    llm_client: LLMClient,
+    entity: EntityNode,
+) -> str:
+    """Classify an entity's type using LLM based on its name and summary."""
+    context = {
+        'entity_name': entity.name,
+        'entity_summary': entity.summary,
+    }
+    llm_response = await llm_client.generate_response(
+        prompt_library.extract_nodes.reclassify_entity(context),
+        response_model=ReclassifiedEntity,
+        model_size=ModelSize.small,
+        group_id=entity.group_id,
+        prompt_name='extract_nodes.reclassify_entity',
+    )
+    result = ReclassifiedEntity(**llm_response)
+    return _sanitize_label(result.entity_type)
+
+
+async def reprocess_entity_types(
+    clients: GraphitiClients,
+    group_id: str,
+) -> list[EntityNode]:
+    """Retroactively classify entities that only have the generic 'Entity' label.
+
+    Retrieves all entities for the given group, filters for untyped entities
+    (those with only ['Entity'] as labels), uses the LLM to classify each one,
+    and updates their labels in the graph.
+    """
+    driver = clients.driver
+    llm_client = clients.llm_client
+
+    # Retrieve all entities for the group, then filter in Python
+    all_entities = await EntityNode.get_by_group_ids(driver, [group_id])
+    entities = [e for e in all_entities if set(e.labels) == {'Entity'}]
+
+    if not entities:
+        logger.info(f'No untyped entities found for group_id={group_id}')
+        return []
+
+    logger.info(f'Found {len(entities)} untyped entities to reclassify for group_id={group_id}')
+
+    # Reclassify all entities with concurrency control
+    new_types = await semaphore_gather(
+        *[reclassify_entity(llm_client, entity) for entity in entities]
+    )
+
+    # Update labels and save
+    updated = []
+    for i, (entity, new_type) in enumerate(zip(entities, new_types, strict=True)):
+        if new_type != 'Entity':
+            entity.labels = list({'Entity', new_type})
+            await entity.save(driver)
+            updated.append(entity)
+            logger.info(f'Reclassified {i + 1}/{len(entities)}: {entity.name} → {new_type}')
+        else:
+            logger.info(f'Skipped {i + 1}/{len(entities)}: {entity.name} (no better type found)')
+
+    logger.info(f'Reclassified {len(updated)}/{len(entities)} entities')
+    return updated

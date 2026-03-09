@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -27,6 +28,8 @@ from graphiti_core.utils.maintenance.node_operations import (
     _extract_entity_summaries_batch,
     _sanitize_label,
     extract_nodes,
+    reclassify_entity,
+    reprocess_entity_types,
 )
 
 
@@ -687,23 +690,176 @@ class TestFreeformEntityExtraction:
 
 
 class TestSanitizeLabel:
-    def test_simple_label(self):
+    def test_basic_pascal_case(self):
         assert _sanitize_label('Person') == 'Person'
 
-    def test_spaces_replaced_with_underscores(self):
-        assert _sanitize_label('Machine Learning') == 'Machine_Learning'
+    def test_lowercase_capitalizes_first(self):
+        assert _sanitize_label('person') == 'Person'
 
-    def test_special_characters_removed(self):
-        assert _sanitize_label('Person:Malicious{uuid}') == 'PersonMaliciousuuid'
+    def test_strips_special_characters(self):
+        assert _sanitize_label('My-Type!') == 'Mytype'
 
-    def test_cypher_injection_prevented(self):
-        assert _sanitize_label('Person}) DELETE n //') == 'Person_DELETE_n'
+    def test_strips_spaces(self):
+        assert _sanitize_label('My Type') == 'Mytype'
+
+    def test_digit_prefix_gets_label_prepended(self):
+        assert _sanitize_label('123Type') == 'Label123type'
 
     def test_empty_string_returns_entity(self):
         assert _sanitize_label('') == 'Entity'
 
-    def test_only_special_chars_returns_entity(self):
+    def test_all_special_chars_returns_entity(self):
         assert _sanitize_label('!@#$%') == 'Entity'
 
-    def test_leading_trailing_underscores_stripped(self):
-        assert _sanitize_label(' _Person_ ') == 'Person'
+    def test_normalizes_underscored_parts_to_pascal_case(self):
+        assert _sanitize_label('My_Type') == 'MyType'
+
+    def test_normalizes_all_caps(self):
+        assert _sanitize_label('PERSON') == 'Person'
+
+    def test_normalizes_all_caps_with_underscores(self):
+        assert _sanitize_label('PERSON_NAME') == 'PersonName'
+
+    def test_underscore_only_returns_entity(self):
+        assert _sanitize_label('_') == 'Entity'
+        assert _sanitize_label('__') == 'Entity'
+
+
+class TestReclassifyEntity:
+    @pytest.mark.asyncio
+    async def test_returns_sanitized_type(self):
+        """reclassify_entity should return the sanitized entity type from LLM."""
+        llm_client = MagicMock()
+        llm_generate = AsyncMock(return_value={'entity_type': 'Person'})
+        llm_client.generate_response = llm_generate
+
+        entity = _make_entity_node('Alice', summary='Alice is a software engineer.')
+
+        result = await reclassify_entity(llm_client, entity)
+
+        assert result == 'Person'
+        llm_generate.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sanitizes_llm_response(self):
+        """reclassify_entity should sanitize unusual LLM responses."""
+        llm_client = MagicMock()
+        llm_generate = AsyncMock(return_value={'entity_type': 'my-custom type!'})
+        llm_client.generate_response = llm_generate
+
+        entity = _make_entity_node('Test', summary='A test entity.')
+
+        result = await reclassify_entity(llm_client, entity)
+
+        assert result == 'Mycustomtype'
+
+    @pytest.mark.asyncio
+    async def test_passes_name_and_summary_to_prompt(self):
+        """reclassify_entity should pass entity name and summary as context."""
+        llm_client = MagicMock()
+        llm_generate = AsyncMock(return_value={'entity_type': 'Person'})
+        llm_client.generate_response = llm_generate
+
+        entity = _make_entity_node('Alice', summary='Alice is the CEO of Acme Corp.')
+
+        await reclassify_entity(llm_client, entity)
+
+        # Verify the prompt was called (the first positional arg is the prompt messages)
+        call_args = llm_generate.call_args
+        prompt_messages = call_args[0][0]
+        # The user message should contain the entity name and summary
+        user_content = prompt_messages[1].content
+        assert 'Alice' in user_content
+        assert 'Alice is the CEO of Acme Corp.' in user_content
+
+
+class TestReprocessEntityTypes:
+    @pytest.mark.asyncio
+    async def test_reclassifies_untyped_entities(self):
+        """Should reclassify entities with only ['Entity'] labels."""
+        clients, llm_generate = _make_clients()
+        llm_generate.return_value = {'entity_type': 'Person'}
+
+        entity = _make_entity_node('Alice', summary='Alice is a person.')
+        mock_save = AsyncMock()
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(EntityNode, 'get_by_group_ids', AsyncMock(return_value=[entity]))
+            m.setattr(EntityNode, 'save', mock_save)
+
+            result = await reprocess_entity_types(clients, 'group')
+
+        assert len(result) == 1
+        assert 'Person' in result[0].labels
+        assert 'Entity' in result[0].labels
+        mock_save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_already_typed_entities(self):
+        """Entities with semantic type labels should not be re-processed."""
+        clients, llm_generate = _make_clients()
+
+        typed_entity = _make_entity_node('Alice', summary='Alice is a person.')
+        typed_entity.labels = ['Entity', 'Person']
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(EntityNode, 'get_by_group_ids', AsyncMock(return_value=[typed_entity]))
+
+            result = await reprocess_entity_types(clients, 'group')
+
+        assert len(result) == 0
+        # LLM should not have been called
+        llm_generate.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skips_entity_type_fallback(self):
+        """Entities where LLM returns 'Entity' should not have labels updated."""
+        clients, llm_generate = _make_clients()
+        llm_generate.return_value = {'entity_type': 'Entity'}
+
+        entity = _make_entity_node('Unknown Thing', summary='Something generic.')
+        mock_save = AsyncMock()
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(EntityNode, 'get_by_group_ids', AsyncMock(return_value=[entity]))
+            m.setattr(EntityNode, 'save', mock_save)
+
+            result = await reprocess_entity_types(clients, 'group')
+
+        assert len(result) == 0
+        mock_save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_group_returns_empty(self):
+        """Empty group should return empty list without LLM calls."""
+        clients, llm_generate = _make_clients()
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(EntityNode, 'get_by_group_ids', AsyncMock(return_value=[]))
+
+            result = await reprocess_entity_types(clients, 'group')
+
+        assert result == []
+        llm_generate.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_logs_progress(self, caplog):
+        """Should log progress during reclassification."""
+        clients, llm_generate = _make_clients()
+        llm_generate.return_value = {'entity_type': 'Person'}
+
+        entity = _make_entity_node('Alice', summary='Alice is a person.')
+        mock_save = AsyncMock()
+
+        with (
+            pytest.MonkeyPatch.context() as m,
+            caplog.at_level(logging.INFO),
+        ):
+            m.setattr(EntityNode, 'get_by_group_ids', AsyncMock(return_value=[entity]))
+            m.setattr(EntityNode, 'save', mock_save)
+
+            await reprocess_entity_types(clients, 'group')
+
+        log_messages = [r.message for r in caplog.records]
+        assert any('Reclassified 1/1' in msg for msg in log_messages)
+        assert any('Alice' in msg for msg in log_messages)
