@@ -160,6 +160,16 @@ NODE_HYBRID_SEARCH_RRF = SearchConfig(
     )
 )
 
+# higher-limit variant for dedup candidate collection — at scale the default
+# limit of 10 causes correct duplicates to fall outside the search window
+NODE_HYBRID_SEARCH_RRF_DEDUP = SearchConfig(
+    node_config=NodeSearchConfig(
+        search_methods=[NodeSearchMethod.bm25, NodeSearchMethod.cosine_similarity],
+        reranker=NodeReranker.rrf,
+    ),
+    limit=30,
+)
+
 # performs a hybrid search over nodes with mmr reranking
 NODE_HYBRID_SEARCH_MMR = SearchConfig(
     node_config=NodeSearchConfig(

@@ -16,6 +16,7 @@ limitations under the License.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from collections import defaultdict
@@ -23,6 +24,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from hashlib import blake2b
+
+logger = logging.getLogger(__name__)
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -201,24 +204,49 @@ def _resolve_with_similarity(
     state: DedupResolutionState,
 ) -> None:
     """Attempt deterministic resolution using exact name hits and fuzzy MinHash comparisons."""
+    exact_resolved = 0
+    fuzzy_resolved = 0
+    low_entropy_count = 0
+    multi_match_count = 0
+    no_match_count = 0
+
     for idx, node in enumerate(extracted_nodes):
         normalized_exact = _normalize_string_exact(node.name)
         normalized_fuzzy = _normalize_name_for_fuzzy(node.name)
 
         if not _has_high_entropy(normalized_fuzzy):
+            logger.debug(
+                'DEDUP_SIMILARITY: %r -> low entropy, deferring to LLM',
+                node.name,
+            )
             state.unresolved_indices.append(idx)
+            low_entropy_count += 1
             continue
 
         existing_matches = indexes.normalized_existing.get(normalized_exact, [])
         if len(existing_matches) == 1:
             match = existing_matches[0]
+            logger.debug(
+                'DEDUP_SIMILARITY: %r -> EXACT match to existing %r (%s)',
+                node.name,
+                match.name,
+                match.uuid[:8],
+            )
             state.resolved_nodes[idx] = match
             state.uuid_map[node.uuid] = match.uuid
             if match.uuid != node.uuid:
                 state.duplicate_pairs.append((node, match))
+            exact_resolved += 1
             continue
         if len(existing_matches) > 1:
+            logger.debug(
+                'DEDUP_SIMILARITY: %r -> %d exact matches (ambiguous), deferring to LLM: %s',
+                node.name,
+                len(existing_matches),
+                [m.name for m in existing_matches],
+            )
             state.unresolved_indices.append(idx)
+            multi_match_count += 1
             continue
 
         shingles = _cached_shingles(normalized_fuzzy)
@@ -237,13 +265,40 @@ def _resolve_with_similarity(
                 best_candidate = indexes.nodes_by_uuid.get(candidate_id)
 
         if best_candidate is not None and best_score >= _FUZZY_JACCARD_THRESHOLD:
+            logger.debug(
+                'DEDUP_SIMILARITY: %r -> FUZZY match to %r (score=%.3f, %s)',
+                node.name,
+                best_candidate.name,
+                best_score,
+                best_candidate.uuid[:8],
+            )
             state.resolved_nodes[idx] = best_candidate
             state.uuid_map[node.uuid] = best_candidate.uuid
             if best_candidate.uuid != node.uuid:
                 state.duplicate_pairs.append((node, best_candidate))
+            fuzzy_resolved += 1
             continue
 
+        logger.debug(
+            'DEDUP_SIMILARITY: %r -> no match (best_fuzzy=%.3f for %r), deferring to LLM',
+            node.name,
+            best_score,
+            best_candidate.name if best_candidate else None,
+        )
         state.unresolved_indices.append(idx)
+        no_match_count += 1
+
+    logger.debug(
+        'DEDUP_SIMILARITY_SUMMARY: %d extracted -> %d exact, %d fuzzy, '
+        '%d low_entropy, %d ambiguous, %d no_match -> %d to LLM',
+        len(extracted_nodes),
+        exact_resolved,
+        fuzzy_resolved,
+        low_entropy_count,
+        multi_match_count,
+        no_match_count,
+        len(state.unresolved_indices),
+    )
 
 
 __all__ = [

@@ -81,6 +81,46 @@ def calculate_cosine_similarity(vector1: list[float], vector2: list[float]) -> f
     return dot_product / (norm_vector1 * norm_vector2)
 
 
+def _vectorized_cosine_rank(
+    records: list[dict] | None,
+    search_vector: list[float],
+    min_score: float,
+    limit: int,
+) -> list[dict]:
+    """Rank records by cosine similarity using vectorized numpy ops.
+
+    Expects each record to have an 'emb' key with the embedding vector.
+    Returns the top *limit* records above *min_score*, sorted descending.
+    """
+    if not records:
+        return []
+    # Build matrix from all non-null embeddings
+    indices = []
+    embs = []
+    for i, rec in enumerate(records):
+        emb = rec.get('emb')
+        if emb is not None:
+            indices.append(i)
+            embs.append(emb)
+    if not embs:
+        return []
+    mat = np.array(embs, dtype=np.float32)            # (N, D)
+    query_vec = np.array(search_vector, dtype=np.float32)  # (D,)
+    # Cosine similarity = dot(a,b) / (|a| * |b|)
+    norms = np.linalg.norm(mat, axis=1)                # (N,)
+    query_norm = np.linalg.norm(query_vec)
+    if query_norm == 0:
+        return []
+    scores = mat @ query_vec / (norms * query_norm + 1e-10)  # (N,)
+    # Filter and sort
+    mask = scores > min_score
+    above = np.where(mask)[0]
+    if len(above) == 0:
+        return []
+    top_k = above[np.argsort(-scores[above])[:limit]]
+    return [records[indices[j]] for j in top_k]
+
+
 def fulltext_query(query: str, group_ids: list[str] | None, driver: GraphDriver):
     if driver.provider == GraphProvider.KUZU:
         # Kuzu only supports simple queries.
@@ -442,40 +482,41 @@ async def edge_similarity_search(
         else:
             return []
     elif driver.provider == GraphProvider.FALKORDB:
-        # Use HNSW vector index for O(log n) search instead of brute-force scan.
-        # Over-fetch to compensate for post-filtering on group_id, edge_uuids, etc.
-        over_fetch_limit = limit * 10
+        # Brute-force cosine similarity scan.  FalkorDB's HNSW vector index
+        # is unreliable (see node_similarity_search comment and FalkorDB#716).
+        # We keep edge_uuids / edge_types filters (no underscore issues) but
+        # skip group_id filters due to FalkorDB underscore escaping bug.
+        edge_filter_parts = []
+        edge_filter_params: dict[str, Any] = {}
+        if search_filter.edge_uuids is not None:
+            edge_filter_parts.append('e.uuid IN $edge_uuids')
+            edge_filter_params['edge_uuids'] = search_filter.edge_uuids
+        if search_filter.edge_types is not None:
+            edge_filter_parts.append('e.name IN $edge_types')
+            edge_filter_params['edge_types'] = search_filter.edge_types
+        edge_filter = (' WHERE ' + ' AND '.join(edge_filter_parts)) if edge_filter_parts else ''
 
-        post_filter_parts = list(filter_queries)
-        post_filter_parts.append('score > $min_score')
-        post_filter = ' WHERE ' + ' AND '.join(post_filter_parts)
-
-        query = (
-            'CALL db.idx.vector.queryRelationships('
-            "'RELATES_TO', 'fact_embedding', $over_fetch_limit, vecf32($search_vector))"
-            """
-            YIELD relationship AS e, score
-            WITH e, score, startNode(e) AS n, endNode(e) AS m
-            """
-            + post_filter
+        bf_query = (
+            match_query
+            + edge_filter
             + """
+            WITH DISTINCT e, n, m, e.fact_embedding AS emb
+            WHERE emb IS NOT NULL
             RETURN
             """
             + get_entity_edge_return_query(driver.provider)
-            + """
-            ORDER BY score DESC
-            LIMIT $limit
-            """
+            + ', emb'
         )
-
-        records, _, _ = await driver.execute_query(
-            query,
-            search_vector=search_vector,
-            over_fetch_limit=over_fetch_limit,
-            limit=limit,
-            min_score=min_score,
+        all_records, _, _ = await driver.execute_query(
+            bf_query,
             routing_='r',
-            **filter_params,
+            **edge_filter_params,
+        )
+        records = _vectorized_cosine_rank(all_records, search_vector, min_score, limit)
+        logger.debug(
+            'BRUTEFORCE_EDGE_SEARCH: scanned %d edges, returning top %d',
+            len(all_records) if all_records else 0,
+            len(records),
         )
     else:
         query = (
@@ -746,6 +787,7 @@ async def node_similarity_search(
 ) -> list[EntityNode]:
     start = time()
     if driver.search_interface:
+        logger.debug('SEARCH_INTERFACE_NODE_SEARCH: dispatching to search_interface (NOT HNSW path)')
         return await driver.search_interface.node_similarity_search(
             driver, search_vector, search_filter, group_ids, limit, min_score
         )
@@ -822,41 +864,41 @@ async def node_similarity_search(
         else:
             return []
     elif driver.provider == GraphProvider.FALKORDB:
-        # Use HNSW vector index for O(log n) search instead of brute-force scan.
-        over_fetch_limit = limit * 10
-
-        post_filter_parts = list(filter_queries)
-        post_filter_parts.append('score > $min_score')
-        post_filter = ' WHERE ' + ' AND '.join(post_filter_parts)
-
-        query = (
-            'CALL db.idx.vector.queryNodes('
-            "'Entity', 'name_embedding', $over_fetch_limit, vecf32($search_vector))"
-            """
-            YIELD node AS n, score
-            WITH n, score
-            """
-            + post_filter
+        # Brute-force cosine similarity scan.  FalkorDB's HNSW vector index
+        # is unreliable — it silently returns 0 or wrong results as the graph
+        # grows (known hnswlib concurrency / index-degradation issue,
+        # FalkorDB#716).  At entity-scale (thousands, not millions) the
+        # brute-force scan is fast and always correct.
+        # Skip group_id / label filters for brute-force scan.  FalkorDB's
+        # driver escapes underscores in string params (e.g. group_id '_'
+        # becomes '\_'), causing WHERE n.group_id IN $group_ids to match
+        # nothing.  At entity-scale the unfiltered scan is still fast and
+        # correct — cosine similarity handles ranking.
+        bf_query = (
+            'MATCH (n:Entity)'
             + """
+            WITH n, n.name_embedding AS emb
+            WHERE emb IS NOT NULL
             RETURN
             """
             + get_entity_node_return_query(driver.provider)
-            + """
-            ORDER BY score DESC
-            LIMIT $limit
-            """
+            + ', emb'
         )
-
-        records, _, _ = await driver.execute_query(
-            query,
-            search_vector=search_vector,
-            over_fetch_limit=over_fetch_limit,
-            limit=limit,
-            min_score=min_score,
+        all_records, _, _ = await driver.execute_query(
+            bf_query,
             routing_='r',
             **filter_params,
         )
+        records = _vectorized_cosine_rank(all_records, search_vector, min_score, limit)
+        logger.debug(
+            'BRUTEFORCE_NODE_SEARCH: scanned %d entities, '
+            'returning top %d: %s',
+            len(all_records) if all_records else 0,
+            len(records),
+            [r['name'] for r in records[:5]] if records else '[]',
+        )
     else:
+        logger.debug('BRUTEFORCE_NODE_SEARCH: provider=%s (NOT using HNSW)', driver.provider)
         query = (
             """
                                                                                                                                     MATCH (n:Entity)

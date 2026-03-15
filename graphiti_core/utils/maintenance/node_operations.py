@@ -22,11 +22,14 @@ from typing import Any, cast
 
 from pydantic import BaseModel
 
+from graphiti_core.driver.driver import GraphDriver, GraphProvider
+from graphiti_core.driver.record_parsers import entity_node_from_record
 from graphiti_core.edges import EntityEdge
 from graphiti_core.graphiti_types import GraphitiClients
 from graphiti_core.helpers import semaphore_gather
 from graphiti_core.llm_client import LLMClient
 from graphiti_core.llm_client.config import ModelSize
+from graphiti_core.models.nodes.node_db_queries import get_entity_node_return_query
 from graphiti_core.nodes import (
     EntityNode,
     EpisodeType,
@@ -45,7 +48,7 @@ from graphiti_core.prompts.extract_nodes import (
 )
 from graphiti_core.search.search import search
 from graphiti_core.search.search_config import SearchResults
-from graphiti_core.search.search_config_recipes import NODE_HYBRID_SEARCH_RRF
+from graphiti_core.search.search_config_recipes import NODE_HYBRID_SEARCH_RRF_DEDUP
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.datetime_utils import utc_now
 from graphiti_core.utils.maintenance.dedup_helpers import (
@@ -293,11 +296,21 @@ async def _collect_candidate_nodes(
                 query=node.name,
                 group_ids=[node.group_id],
                 search_filter=SearchFilters(),
-                config=NODE_HYBRID_SEARCH_RRF,
+                config=NODE_HYBRID_SEARCH_RRF_DEDUP,
             )
             for node in extracted_nodes
         ]
     )
+
+    # Log per-entity search results for dedup debugging
+    for node, result in zip(extracted_nodes, search_results):
+        candidate_names = [c.name for c in result.nodes]
+        logger.debug(
+            'DEDUP_CANDIDATES for %r: %d candidates found: %s',
+            node.name,
+            len(result.nodes),
+            candidate_names,
+        )
 
     candidate_nodes: list[EntityNode] = [node for result in search_results for node in result.nodes]
 
@@ -312,11 +325,68 @@ async def _collect_candidate_nodes(
         seen_candidate_uuids.add(candidate.uuid)
         ordered_candidates.append(candidate)
 
+    logger.debug(
+        'DEDUP_CANDIDATE_POOL: %d extracted entities, %d total unique candidates (from %d raw results)',
+        len(extracted_nodes),
+        len(ordered_candidates),
+        len(candidate_nodes),
+    )
+
     return ordered_candidates
+
+
+async def _lookup_node_by_name(
+    driver: GraphDriver,
+    name: str,
+    group_id: str,
+) -> EntityNode | None:
+    """Direct DB lookup for an entity node by exact name within a group.
+
+    Used as a fallback when the LLM identifies a duplicate that wasn't
+    in the candidate pool returned by the top-N hybrid search.
+    """
+    return_clause = get_entity_node_return_query(driver.provider)
+    query = f"""
+        MATCH (n:Entity {{name: $name, group_id: $group_id}})
+        RETURN {return_clause}
+        LIMIT 1
+    """
+    records, _, _ = await driver.execute_query(query, name=name, group_id=group_id)
+    if records:
+        return entity_node_from_record(records[0])
+
+    # Try case-insensitive match as a second attempt
+    if driver.provider == GraphProvider.FALKORDB:
+        query_ci = f"""
+            MATCH (n:Entity {{group_id: $group_id}})
+            WHERE toLower(n.name) = toLower($name)
+            RETURN {return_clause}
+            LIMIT 1
+        """
+    else:
+        query_ci = f"""
+            MATCH (n:Entity {{group_id: $group_id}})
+            WHERE toLower(n.name) = toLower($name)
+            RETURN {return_clause}
+            LIMIT 1
+        """
+    records, _, _ = await driver.execute_query(query_ci, name=name, group_id=group_id)
+    if records:
+        node = entity_node_from_record(records[0])
+        logger.debug(
+            'DEDUP_DB_FALLBACK: case-insensitive match for %r -> found %r (%s)',
+            name,
+            node.name,
+            node.uuid[:8],
+        )
+        return node
+
+    return None
 
 
 async def _resolve_with_llm(
     llm_client: LLMClient,
+    driver: GraphDriver,
     extracted_nodes: list[EntityNode],
     indexes: DedupCandidateIndexes,
     state: DedupResolutionState,
@@ -386,6 +456,14 @@ async def _resolve_with_llm(
         node.name: node for node in indexes.existing_nodes
     }
 
+    logger.debug(
+        'DEDUP_LLM_CONTEXT: %d unresolved entities, %d existing candidates, '
+        'existing_names=%s',
+        len(llm_extracted_nodes),
+        len(indexes.existing_nodes),
+        sorted(existing_nodes_by_name.keys()),
+    )
+
     context = {
         'extracted_nodes': extracted_nodes_context,
         'existing_nodes': existing_nodes_context,
@@ -452,17 +530,54 @@ async def _resolve_with_llm(
 
         resolved_node: EntityNode
         if not duplicate_name:
+            logger.debug(
+                'DEDUP_LLM_RESULT: %r (id=%d) -> NEW (no duplicate found)',
+                extracted_node.name,
+                relative_id,
+            )
             resolved_node = extracted_node
         elif duplicate_name in existing_nodes_by_name:
             resolved_node = existing_nodes_by_name[duplicate_name]
-        else:
-            logger.warning(
-                'Invalid duplicate_name for extracted node %s; treating as no duplicate. '
-                'duplicate_name was: %r',
-                extracted_node.uuid,
-                duplicate_name[:50] + '...' if len(duplicate_name) > 50 else duplicate_name,
+            logger.debug(
+                'DEDUP_LLM_RESULT: %r (id=%d) -> MERGED with existing %r (%s)',
+                extracted_node.name,
+                relative_id,
+                duplicate_name,
+                resolved_node.uuid[:8],
             )
-            resolved_node = extracted_node
+        else:
+            # LLM returned a name not in the candidate pool — try direct DB lookup
+            # before giving up. The candidate search (top-10 per entity) may have
+            # missed the correct node, but the LLM recognized it from episode context.
+            db_node = await _lookup_node_by_name(driver, duplicate_name, extracted_node.group_id)
+            if db_node is not None:
+                resolved_node = db_node
+                logger.info(
+                    'DEDUP_LLM_DB_FALLBACK: %r (id=%d) -> MERGED with %r (%s) '
+                    'via direct DB lookup (not in candidate pool of %d)',
+                    extracted_node.name,
+                    relative_id,
+                    duplicate_name,
+                    db_node.uuid[:8],
+                    len(existing_nodes_by_name),
+                )
+            else:
+                # Check for case-insensitive near-matches for diagnostics
+                near_matches = [
+                    name for name in existing_nodes_by_name
+                    if name.lower() == duplicate_name.lower()
+                ]
+                logger.warning(
+                    'Invalid duplicate_name for extracted node %s (%r); treating as no duplicate. '
+                    'duplicate_name was: %r. Case-insensitive near-matches in candidate pool: %s. '
+                    'DB lookup also found nothing. Total candidates: %d',
+                    extracted_node.uuid,
+                    extracted_node.name,
+                    duplicate_name[:50] + '...' if len(duplicate_name) > 50 else duplicate_name,
+                    near_matches if near_matches else 'NONE',
+                    len(existing_nodes_by_name),
+                )
+                resolved_node = extracted_node
 
         state.resolved_nodes[original_index] = resolved_node
         state.uuid_map[extracted_node.uuid] = resolved_node.uuid
@@ -498,6 +613,7 @@ async def resolve_extracted_nodes(
 
     await _resolve_with_llm(
         llm_client,
+        clients.driver,
         extracted_nodes,
         indexes,
         state,
@@ -506,10 +622,27 @@ async def resolve_extracted_nodes(
         entity_types,
     )
 
+    fallback_count = 0
     for idx, node in enumerate(extracted_nodes):
         if state.resolved_nodes[idx] is None:
             state.resolved_nodes[idx] = node
             state.uuid_map[node.uuid] = node.uuid
+            fallback_count += 1
+
+    # Summary: how many were deduped vs kept as new
+    deduped_count = sum(
+        1 for e, r in zip(extracted_nodes, state.resolved_nodes)
+        if r is not None and r.uuid != e.uuid
+    )
+    new_count = len(extracted_nodes) - deduped_count
+    logger.debug(
+        'DEDUP_RESOLVE_SUMMARY: %d extracted -> %d deduped to existing, %d kept as new '
+        '(%d resolved by fallback)',
+        len(extracted_nodes),
+        deduped_count,
+        new_count,
+        fallback_count,
+    )
 
     logger.debug(
         'Resolved nodes: %s',
