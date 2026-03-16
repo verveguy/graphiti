@@ -16,6 +16,7 @@ limitations under the License.
 
 import logging
 from collections import defaultdict
+import asyncio
 from time import time
 from typing import Any
 
@@ -73,18 +74,33 @@ MAX_QUERY_LENGTH = 128
 # Invalidated by calling invalidate_embedding_cache().
 # ---------------------------------------------------------------------------
 class _EmbeddingCache:
-    """Caches entity/edge records + pre-built numpy matrix for cosine search."""
+    """Caches entity/edge records + pre-built numpy matrix for cosine search.
+
+    Uses an asyncio.Lock to prevent cache stampede when multiple concurrent
+    callers (via semaphore_gather) all see an empty cache simultaneously.
+    Only the first caller fetches from the DB; the rest wait for it.
+    """
 
     def __init__(self) -> None:
         self.records: list[dict] | None = None
         self.matrix: np.ndarray | None = None  # (N, D) float32
         self.norms: np.ndarray | None = None   # (N,) float32
+        self._idx_map: list[int] | None = None  # indices of non-null embeddings
+        self._lock: asyncio.Lock | None = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        # Lazy-init lock in the running event loop's context
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     def set(self, records: list[dict]) -> None:
+        idx_map = []
         embs = []
-        for rec in records:
+        for i, rec in enumerate(records):
             emb = rec.get('emb')
             if emb is not None:
+                idx_map.append(i)
                 embs.append(emb)
         if embs:
             self.matrix = np.array(embs, dtype=np.float32)
@@ -92,11 +108,16 @@ class _EmbeddingCache:
         else:
             self.matrix = None
             self.norms = None
+        self._idx_map = idx_map
         self.records = records
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.records is not None
 
     def search(self, query_vec: list[float], min_score: float, limit: int) -> list[dict]:
         """Return top-k records above min_score by cosine similarity."""
-        if self.records is None or self.matrix is None or self.norms is None:
+        if self.records is None or self.matrix is None or self.norms is None or self._idx_map is None:
             return []
         qv = np.array(query_vec, dtype=np.float32)
         qnorm = np.linalg.norm(qv)
@@ -108,14 +129,13 @@ class _EmbeddingCache:
         if len(above) == 0:
             return []
         top_k = above[np.argsort(-scores[above])[:limit]]
-        # Map back through non-null embedding indices
-        idx_map = [i for i, r in enumerate(self.records) if r.get('emb') is not None]
-        return [self.records[idx_map[j]] for j in top_k]
+        return [self.records[self._idx_map[j]] for j in top_k]
 
     def invalidate(self) -> None:
         self.records = None
         self.matrix = None
         self.norms = None
+        self._idx_map = None
 
 
 _node_embedding_cache = _EmbeddingCache()
@@ -594,26 +614,28 @@ async def edge_similarity_search(
         else:
             # Unscoped search (invalidation candidates) — use cache to avoid
             # repeated Cypher round-trips fetching all edge embeddings.
-            if _edge_embedding_cache.records is None:
-                bf_query = (
-                    match_query
-                    + """
-                    WITH DISTINCT e, n, m, e.fact_embedding AS emb
-                    WHERE emb IS NOT NULL
-                    RETURN
-                    """
-                    + get_entity_edge_return_query(driver.provider)
-                    + ', emb'
-                )
-                all_records, _, _ = await driver.execute_query(
-                    bf_query,
-                    routing_='r',
-                )
-                _edge_embedding_cache.set(all_records or [])
-                logger.debug(
-                    'BRUTEFORCE_EDGE_SEARCH: loaded %d edges into cache',
-                    len(all_records) if all_records else 0,
-                )
+            # Lock prevents cache stampede from concurrent semaphore_gather calls.
+            async with _edge_embedding_cache._get_lock():
+                if not _edge_embedding_cache.is_loaded:
+                    bf_query = (
+                        match_query
+                        + """
+                        WITH DISTINCT e, n, m, e.fact_embedding AS emb
+                        WHERE emb IS NOT NULL
+                        RETURN
+                        """
+                        + get_entity_edge_return_query(driver.provider)
+                        + ', emb'
+                    )
+                    all_records, _, _ = await driver.execute_query(
+                        bf_query,
+                        routing_='r',
+                    )
+                    _edge_embedding_cache.set(all_records or [])
+                    logger.debug(
+                        'BRUTEFORCE_EDGE_SEARCH: loaded %d edges into cache',
+                        len(all_records) if all_records else 0,
+                    )
             records = _edge_embedding_cache.search(search_vector, min_score, limit)
             logger.debug(
                 'BRUTEFORCE_EDGE_SEARCH (cached): returning top %d',
@@ -967,26 +989,28 @@ async def node_similarity_search(
     elif driver.provider == GraphProvider.FALKORDB:
         # Brute-force cosine similarity with in-process embedding cache.
         # FalkorDB's HNSW vector index is unreliable (FalkorDB#716).
-        if _node_embedding_cache.records is None:
-            bf_query = (
-                'MATCH (n:Entity)'
-                + """
-                WITH n, n.name_embedding AS emb
-                WHERE emb IS NOT NULL
-                RETURN
-                """
-                + get_entity_node_return_query(driver.provider)
-                + ', emb'
-            )
-            all_records, _, _ = await driver.execute_query(
-                bf_query,
-                routing_='r',
-            )
-            _node_embedding_cache.set(all_records or [])
-            logger.debug(
-                'BRUTEFORCE_NODE_SEARCH: loaded %d entities into cache',
-                len(all_records) if all_records else 0,
-            )
+        # Use lock to prevent cache stampede from concurrent semaphore_gather calls.
+        async with _node_embedding_cache._get_lock():
+            if not _node_embedding_cache.is_loaded:
+                bf_query = (
+                    'MATCH (n:Entity)'
+                    + """
+                    WITH n, n.name_embedding AS emb
+                    WHERE emb IS NOT NULL
+                    RETURN
+                    """
+                    + get_entity_node_return_query(driver.provider)
+                    + ', emb'
+                )
+                all_records, _, _ = await driver.execute_query(
+                    bf_query,
+                    routing_='r',
+                )
+                _node_embedding_cache.set(all_records or [])
+                logger.debug(
+                    'BRUTEFORCE_NODE_SEARCH: loaded %d entities into cache',
+                    len(all_records) if all_records else 0,
+                )
         records = _node_embedding_cache.search(search_vector, min_score, limit)
         logger.debug(
             'BRUTEFORCE_NODE_SEARCH: returning top %d: %s',
