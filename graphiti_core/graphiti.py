@@ -985,6 +985,11 @@ class Graphiti:
                     saga_previous_episode_uuid,
                 )
 
+                # Invalidate brute-force search caches since new nodes/edges were saved
+                from graphiti_core.search.search_utils import invalidate_embedding_cache
+
+                invalidate_embedding_cache('all')
+
                 # Update communities if requested
                 communities = []
                 community_edges = []
