@@ -67,6 +67,76 @@ MAX_SEARCH_DEPTH = 3
 MAX_QUERY_LENGTH = 128
 
 
+# ---------------------------------------------------------------------------
+# In-process embedding caches for brute-force cosine search (FalkorDB only).
+# Avoids repeated Cypher round-trips to fetch the same embeddings.
+# Invalidated by calling invalidate_embedding_cache().
+# ---------------------------------------------------------------------------
+class _EmbeddingCache:
+    """Caches entity/edge records + pre-built numpy matrix for cosine search."""
+
+    def __init__(self) -> None:
+        self.records: list[dict] | None = None
+        self.matrix: np.ndarray | None = None  # (N, D) float32
+        self.norms: np.ndarray | None = None   # (N,) float32
+
+    def set(self, records: list[dict]) -> None:
+        embs = []
+        for rec in records:
+            emb = rec.get('emb')
+            if emb is not None:
+                embs.append(emb)
+        if embs:
+            self.matrix = np.array(embs, dtype=np.float32)
+            self.norms = np.linalg.norm(self.matrix, axis=1)
+        else:
+            self.matrix = None
+            self.norms = None
+        self.records = records
+
+    def search(self, query_vec: list[float], min_score: float, limit: int) -> list[dict]:
+        """Return top-k records above min_score by cosine similarity."""
+        if self.records is None or self.matrix is None or self.norms is None:
+            return []
+        qv = np.array(query_vec, dtype=np.float32)
+        qnorm = np.linalg.norm(qv)
+        if qnorm == 0:
+            return []
+        scores = self.matrix @ qv / (self.norms * qnorm + 1e-10)
+        mask = scores > min_score
+        above = np.where(mask)[0]
+        if len(above) == 0:
+            return []
+        top_k = above[np.argsort(-scores[above])[:limit]]
+        # Map back through non-null embedding indices
+        idx_map = [i for i, r in enumerate(self.records) if r.get('emb') is not None]
+        return [self.records[idx_map[j]] for j in top_k]
+
+    def invalidate(self) -> None:
+        self.records = None
+        self.matrix = None
+        self.norms = None
+
+
+_node_embedding_cache = _EmbeddingCache()
+_edge_embedding_cache = _EmbeddingCache()
+
+
+def invalidate_embedding_cache(kind: str = 'all') -> None:
+    """Invalidate the in-process embedding cache.
+
+    Call this after adding/deleting nodes or edges so the next brute-force
+    search re-fetches from FalkorDB.
+
+    Args:
+        kind: 'node', 'edge', or 'all'
+    """
+    if kind in ('node', 'all'):
+        _node_embedding_cache.invalidate()
+    if kind in ('edge', 'all'):
+        _edge_embedding_cache.invalidate()
+
+
 def calculate_cosine_similarity(vector1: list[float], vector2: list[float]) -> float:
     """
     Calculates the cosine similarity between two vectors using NumPy.
@@ -482,42 +552,73 @@ async def edge_similarity_search(
         else:
             return []
     elif driver.provider == GraphProvider.FALKORDB:
-        # Brute-force cosine similarity scan.  FalkorDB's HNSW vector index
-        # is unreliable (see node_similarity_search comment and FalkorDB#716).
-        # We keep edge_uuids / edge_types filters (no underscore issues) but
-        # skip group_id filters due to FalkorDB underscore escaping bug.
-        edge_filter_parts = []
-        edge_filter_params: dict[str, Any] = {}
-        if search_filter.edge_uuids is not None:
-            edge_filter_parts.append('e.uuid IN $edge_uuids')
-            edge_filter_params['edge_uuids'] = search_filter.edge_uuids
-        if search_filter.edge_types is not None:
-            edge_filter_parts.append('e.name IN $edge_types')
-            edge_filter_params['edge_types'] = search_filter.edge_types
-        edge_filter = (' WHERE ' + ' AND '.join(edge_filter_parts)) if edge_filter_parts else ''
+        # Brute-force cosine similarity with in-process embedding cache.
+        # FalkorDB's HNSW vector index is unreliable (FalkorDB#716).
+        is_scoped = search_filter.edge_uuids is not None or search_filter.edge_types is not None
 
-        bf_query = (
-            match_query
-            + edge_filter
-            + """
-            WITH DISTINCT e, n, m, e.fact_embedding AS emb
-            WHERE emb IS NOT NULL
-            RETURN
-            """
-            + get_entity_edge_return_query(driver.provider)
-            + ', emb'
-        )
-        all_records, _, _ = await driver.execute_query(
-            bf_query,
-            routing_='r',
-            **edge_filter_params,
-        )
-        records = _vectorized_cosine_rank(all_records, search_vector, min_score, limit)
-        logger.debug(
-            'BRUTEFORCE_EDGE_SEARCH: scanned %d edges, returning top %d',
-            len(all_records) if all_records else 0,
-            len(records),
-        )
+        if is_scoped:
+            # Scoped search (e.g. edges between specific nodes) — small set,
+            # query directly without cache.
+            edge_filter_parts = []
+            edge_filter_params: dict[str, Any] = {}
+            if search_filter.edge_uuids is not None:
+                edge_filter_parts.append('e.uuid IN $edge_uuids')
+                edge_filter_params['edge_uuids'] = search_filter.edge_uuids
+            if search_filter.edge_types is not None:
+                edge_filter_parts.append('e.name IN $edge_types')
+                edge_filter_params['edge_types'] = search_filter.edge_types
+            edge_filter = ' WHERE ' + ' AND '.join(edge_filter_parts)
+
+            bf_query = (
+                match_query
+                + edge_filter
+                + """
+                WITH DISTINCT e, n, m, e.fact_embedding AS emb
+                WHERE emb IS NOT NULL
+                RETURN
+                """
+                + get_entity_edge_return_query(driver.provider)
+                + ', emb'
+            )
+            all_records, _, _ = await driver.execute_query(
+                bf_query,
+                routing_='r',
+                **edge_filter_params,
+            )
+            records = _vectorized_cosine_rank(all_records, search_vector, min_score, limit)
+            logger.debug(
+                'BRUTEFORCE_EDGE_SEARCH (scoped): scanned %d edges, returning top %d',
+                len(all_records) if all_records else 0,
+                len(records),
+            )
+        else:
+            # Unscoped search (invalidation candidates) — use cache to avoid
+            # repeated Cypher round-trips fetching all edge embeddings.
+            if _edge_embedding_cache.records is None:
+                bf_query = (
+                    match_query
+                    + """
+                    WITH DISTINCT e, n, m, e.fact_embedding AS emb
+                    WHERE emb IS NOT NULL
+                    RETURN
+                    """
+                    + get_entity_edge_return_query(driver.provider)
+                    + ', emb'
+                )
+                all_records, _, _ = await driver.execute_query(
+                    bf_query,
+                    routing_='r',
+                )
+                _edge_embedding_cache.set(all_records or [])
+                logger.debug(
+                    'BRUTEFORCE_EDGE_SEARCH: loaded %d edges into cache',
+                    len(all_records) if all_records else 0,
+                )
+            records = _edge_embedding_cache.search(search_vector, min_score, limit)
+            logger.debug(
+                'BRUTEFORCE_EDGE_SEARCH (cached): returning top %d',
+                len(records),
+            )
     else:
         query = (
             match_query
@@ -864,36 +965,31 @@ async def node_similarity_search(
         else:
             return []
     elif driver.provider == GraphProvider.FALKORDB:
-        # Brute-force cosine similarity scan.  FalkorDB's HNSW vector index
-        # is unreliable — it silently returns 0 or wrong results as the graph
-        # grows (known hnswlib concurrency / index-degradation issue,
-        # FalkorDB#716).  At entity-scale (thousands, not millions) the
-        # brute-force scan is fast and always correct.
-        # Skip group_id / label filters for brute-force scan.  FalkorDB's
-        # driver escapes underscores in string params (e.g. group_id '_'
-        # becomes '\_'), causing WHERE n.group_id IN $group_ids to match
-        # nothing.  At entity-scale the unfiltered scan is still fast and
-        # correct — cosine similarity handles ranking.
-        bf_query = (
-            'MATCH (n:Entity)'
-            + """
-            WITH n, n.name_embedding AS emb
-            WHERE emb IS NOT NULL
-            RETURN
-            """
-            + get_entity_node_return_query(driver.provider)
-            + ', emb'
-        )
-        all_records, _, _ = await driver.execute_query(
-            bf_query,
-            routing_='r',
-            **filter_params,
-        )
-        records = _vectorized_cosine_rank(all_records, search_vector, min_score, limit)
+        # Brute-force cosine similarity with in-process embedding cache.
+        # FalkorDB's HNSW vector index is unreliable (FalkorDB#716).
+        if _node_embedding_cache.records is None:
+            bf_query = (
+                'MATCH (n:Entity)'
+                + """
+                WITH n, n.name_embedding AS emb
+                WHERE emb IS NOT NULL
+                RETURN
+                """
+                + get_entity_node_return_query(driver.provider)
+                + ', emb'
+            )
+            all_records, _, _ = await driver.execute_query(
+                bf_query,
+                routing_='r',
+            )
+            _node_embedding_cache.set(all_records or [])
+            logger.debug(
+                'BRUTEFORCE_NODE_SEARCH: loaded %d entities into cache',
+                len(all_records) if all_records else 0,
+            )
+        records = _node_embedding_cache.search(search_vector, min_score, limit)
         logger.debug(
-            'BRUTEFORCE_NODE_SEARCH: scanned %d entities, '
-            'returning top %d: %s',
-            len(all_records) if all_records else 0,
+            'BRUTEFORCE_NODE_SEARCH: returning top %d: %s',
             len(records),
             [r['name'] for r in records[:5]] if records else '[]',
         )
