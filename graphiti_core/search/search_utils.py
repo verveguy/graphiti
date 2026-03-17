@@ -221,6 +221,8 @@ def update_embedding_cache(
                     'group_id': n.group_id,
                     'summary': getattr(n, 'summary', ''),
                     'created_at': str(getattr(n, 'created_at', '')),
+                    'labels': getattr(n, 'labels', []),
+                    'attributes': {},
                     'emb': emb,
                 }
                 node_records.append(rec)
@@ -240,6 +242,11 @@ def update_embedding_cache(
                     'source_node_uuid': e.source_node_uuid,
                     'target_node_uuid': e.target_node_uuid,
                     'created_at': str(getattr(e, 'created_at', '')),
+                    'expired_at': str(getattr(e, 'expired_at', '')) if getattr(e, 'expired_at', None) else None,
+                    'valid_at': str(getattr(e, 'valid_at', '')) if getattr(e, 'valid_at', None) else None,
+                    'invalid_at': str(getattr(e, 'invalid_at', '')) if getattr(e, 'invalid_at', None) else None,
+                    'episodes': getattr(e, 'episodes', []),
+                    'attributes': {},
                     'emb': emb,
                 }
                 edge_records.append(rec)
