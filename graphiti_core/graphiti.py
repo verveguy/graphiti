@@ -985,10 +985,10 @@ class Graphiti:
                     saga_previous_episode_uuid,
                 )
 
-                # Invalidate brute-force search caches since new nodes/edges were saved
-                from graphiti_core.search.search_utils import invalidate_embedding_cache
+                # Incrementally update brute-force search caches with newly saved data
+                from graphiti_core.search.search_utils import update_embedding_cache
 
-                invalidate_embedding_cache('all')
+                update_embedding_cache(nodes=hydrated_nodes, edges=entity_edges)
 
                 # Update communities if requested
                 communities = []
@@ -1601,3 +1601,8 @@ class Graphiti:
         await Node.delete_by_uuids(self.driver, [node.uuid for node in nodes_to_delete])
 
         await episode.delete(self.driver)
+
+        # Full invalidate on deletion — can't incrementally remove from numpy matrix
+        from graphiti_core.search.search_utils import invalidate_embedding_cache
+
+        invalidate_embedding_cache('all')
