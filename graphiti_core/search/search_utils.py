@@ -131,6 +131,44 @@ class _EmbeddingCache:
         top_k = above[np.argsort(-scores[above])[:limit]]
         return [self.records[self._idx_map[j]] for j in top_k]
 
+    def append(self, new_records: list[dict]) -> None:
+        """Incrementally add new records to the cache without a full reload.
+
+        If the cache is not loaded yet, this is a no-op (the next search will
+        do a full load).  Records without an 'emb' key are stored but not
+        indexed for similarity search.
+        """
+        if self.records is None or self.matrix is None or self.norms is None or self._idx_map is None:
+            return  # Cache not loaded — nothing to append to
+        if not new_records:
+            return
+
+        new_embs = []
+        new_idx_map = []
+        base = len(self.records)
+        for i, rec in enumerate(new_records):
+            emb = rec.get('emb')
+            if emb is not None:
+                new_idx_map.append(base + i)
+                new_embs.append(emb)
+
+        self.records.extend(new_records)
+
+        if new_embs:
+            new_mat = np.array(new_embs, dtype=np.float32)
+            new_norms = np.linalg.norm(new_mat, axis=1)
+            self.matrix = np.vstack([self.matrix, new_mat])
+            self.norms = np.concatenate([self.norms, new_norms])
+            self._idx_map.extend(new_idx_map)
+
+        logger.debug(
+            'EMBEDDING_CACHE_APPEND: added %d records (%d with embeddings), '
+            'total now %d records',
+            len(new_records),
+            len(new_embs),
+            len(self.records),
+        )
+
     def invalidate(self) -> None:
         self.records = None
         self.matrix = None
@@ -145,8 +183,9 @@ _edge_embedding_cache = _EmbeddingCache()
 def invalidate_embedding_cache(kind: str = 'all') -> None:
     """Invalidate the in-process embedding cache.
 
-    Call this after adding/deleting nodes or edges so the next brute-force
-    search re-fetches from FalkorDB.
+    Call this after deleting nodes or edges so the next brute-force
+    search re-fetches from FalkorDB.  For additions, prefer
+    ``update_embedding_cache`` to avoid a full reload.
 
     Args:
         kind: 'node', 'edge', or 'all'
@@ -155,6 +194,57 @@ def invalidate_embedding_cache(kind: str = 'all') -> None:
         _node_embedding_cache.invalidate()
     if kind in ('edge', 'all'):
         _edge_embedding_cache.invalidate()
+
+
+def update_embedding_cache(
+    *,
+    nodes: list | None = None,
+    edges: list | None = None,
+) -> None:
+    """Incrementally update the embedding cache with newly saved nodes/edges.
+
+    Builds cache-compatible records from Graphiti EntityNode/EntityEdge objects
+    and appends them to the in-process cache.  This avoids a full FalkorDB
+    reload after each add_episode.
+
+    If the cache hasn't been loaded yet, this is a no-op — the next search
+    will do the initial full load.
+    """
+    if nodes:
+        node_records = []
+        for n in nodes:
+            emb = getattr(n, 'name_embedding', None)
+            if emb is not None:
+                rec = {
+                    'uuid': n.uuid,
+                    'name': n.name,
+                    'group_id': n.group_id,
+                    'summary': getattr(n, 'summary', ''),
+                    'created_at': str(getattr(n, 'created_at', '')),
+                    'emb': emb,
+                }
+                node_records.append(rec)
+        if node_records:
+            _node_embedding_cache.append(node_records)
+
+    if edges:
+        edge_records = []
+        for e in edges:
+            emb = getattr(e, 'fact_embedding', None)
+            if emb is not None:
+                rec = {
+                    'uuid': e.uuid,
+                    'name': getattr(e, 'name', ''),
+                    'fact': getattr(e, 'fact', ''),
+                    'group_id': e.group_id,
+                    'source_node_uuid': e.source_node_uuid,
+                    'target_node_uuid': e.target_node_uuid,
+                    'created_at': str(getattr(e, 'created_at', '')),
+                    'emb': emb,
+                }
+                edge_records.append(rec)
+        if edge_records:
+            _edge_embedding_cache.append(edge_records)
 
 
 def calculate_cosine_similarity(vector1: list[float], vector2: list[float]) -> float:
