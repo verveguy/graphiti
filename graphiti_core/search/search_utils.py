@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import asyncio
 import logging
 from collections import defaultdict
 from time import time
@@ -66,6 +67,250 @@ DEFAULT_MIN_SCORE = 0.6
 DEFAULT_MMR_LAMBDA = 0.5
 MAX_SEARCH_DEPTH = 3
 MAX_QUERY_LENGTH = 128
+
+
+# ---------------------------------------------------------------------------
+# In-process embedding cache for FalkorDB brute-force cosine similarity
+# ---------------------------------------------------------------------------
+
+
+class _EmbeddingCache:
+    """Cache embeddings fetched from FalkorDB and rank via vectorized cosine.
+
+    FalkorDB's built-in vector similarity relies on hnswlib which has a known
+    concurrency bug (FalkorDB/FalkorDB#716) that causes silent result loss.
+    This cache loads all embeddings once into a numpy matrix and performs
+    cosine similarity via a single matrix multiply (<1 ms for typical graphs).
+    """
+
+    def __init__(self) -> None:
+        self.records: list[dict[str, Any]] | None = None
+        self.matrix: np.ndarray | None = None
+        self.norms: np.ndarray | None = None
+        self._idx_map: list[int] | None = None
+        self._lock: asyncio.Lock | None = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        """Lazily create the lock – can't create at module level before the event loop."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
+
+    def set(self, records: list[dict[str, Any]]) -> None:
+        """Build a float32 matrix from *records* that contain an ``emb`` key."""
+        self.records = records
+        idx_map: list[int] = []
+        rows: list[list[float]] = []
+        for i, rec in enumerate(records):
+            emb = rec.get('emb')
+            if emb is not None:
+                idx_map.append(i)
+                rows.append(emb)
+        if rows:
+            self.matrix = np.array(rows, dtype=np.float32)
+            self.norms = np.linalg.norm(self.matrix, axis=1).astype(np.float32)
+        else:
+            self.matrix = None
+            self.norms = None
+        self._idx_map = idx_map
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.records is not None
+
+    def search(
+        self,
+        query_vec: list[float],
+        min_score: float,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Return top-*limit* records whose cosine similarity exceeds *min_score*."""
+        if (
+            self.records is None
+            or self.matrix is None
+            or self.norms is None
+            or self._idx_map is None
+        ):
+            return []
+        qvec = np.array(query_vec, dtype=np.float32)
+        qnorm = float(np.linalg.norm(qvec))
+        scores = (self.matrix @ qvec) / (self.norms * qnorm + 1e-10)
+        mask = scores > min_score
+        if not np.any(mask):
+            return []
+        indices = np.where(mask)[0]
+        top_k = indices[np.argsort(-scores[indices])[:limit]]
+        return [self.records[self._idx_map[int(k)]] for k in top_k]
+
+    def append(self, new_records: list[dict[str, Any]]) -> None:
+        """Incrementally add *new_records* to the cache."""
+        if not self.is_loaded or self.records is None:
+            return
+        idx_base = len(self.records)
+        self.records.extend(new_records)
+        new_rows: list[list[float]] = []
+        new_idx: list[int] = []
+        for i, rec in enumerate(new_records):
+            emb = rec.get('emb')
+            if emb is not None:
+                new_idx.append(idx_base + i)
+                new_rows.append(emb)
+        if not new_rows:
+            return
+        new_matrix = np.array(new_rows, dtype=np.float32)
+        new_norms = np.linalg.norm(new_matrix, axis=1).astype(np.float32)
+        if self.matrix is not None and self.norms is not None and self._idx_map is not None:
+            self.matrix = np.vstack([self.matrix, new_matrix])
+            self.norms = np.concatenate([self.norms, new_norms])
+            self._idx_map.extend(new_idx)
+        else:
+            self.matrix = new_matrix
+            self.norms = new_norms
+            self._idx_map = new_idx
+        logger.debug('EMBEDDING_CACHE_APPEND: added %d embeddings', len(new_rows))
+
+    def invalidate(self) -> None:
+        self.records = None
+        self.matrix = None
+        self.norms = None
+        self._idx_map = None
+
+
+_node_embedding_cache = _EmbeddingCache()
+_edge_embedding_cache = _EmbeddingCache()
+_community_embedding_cache = _EmbeddingCache()
+
+
+def invalidate_embedding_cache(kind: str = 'all') -> None:
+    """Invalidate one or all embedding caches."""
+    if kind in ('all', 'nodes'):
+        _node_embedding_cache.invalidate()
+    if kind in ('all', 'edges'):
+        _edge_embedding_cache.invalidate()
+    if kind in ('all', 'communities'):
+        _community_embedding_cache.invalidate()
+
+
+def update_embedding_cache(
+    *,
+    nodes: list[EntityNode] | None = None,
+    edges: list[EntityEdge] | None = None,
+) -> None:
+    """Append newly created nodes/edges to the in-process caches (if loaded)."""
+    if nodes:
+        node_records: list[dict[str, Any]] = []
+        for n in nodes:
+            node_records.append(
+                {
+                    'uuid': n.uuid,
+                    'name': n.name,
+                    'group_id': n.group_id,
+                    'summary': n.summary,
+                    'created_at': n.created_at,
+                    'labels': n.labels,
+                    'attributes': {},
+                    'emb': n.name_embedding,
+                }
+            )
+        _node_embedding_cache.append(node_records)
+
+    if edges:
+        edge_records: list[dict[str, Any]] = []
+        for e in edges:
+            edge_records.append(
+                {
+                    'uuid': e.uuid,
+                    'name': e.name,
+                    'fact': e.fact,
+                    'group_id': e.group_id,
+                    'source_node_uuid': e.source_node_uuid,
+                    'target_node_uuid': e.target_node_uuid,
+                    'created_at': e.created_at,
+                    'expired_at': e.expired_at,
+                    'valid_at': e.valid_at,
+                    'invalid_at': e.invalid_at,
+                    'episodes': e.episodes,
+                    'attributes': {},
+                    'emb': e.fact_embedding,
+                }
+            )
+        _edge_embedding_cache.append(edge_records)
+
+
+def _vectorized_cosine_rank(
+    records: list[dict[str, Any]],
+    search_vector: list[float],
+    min_score: float,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Rank *records* (each with an ``emb`` key) by cosine similarity."""
+    rows: list[list[float]] = []
+    idx_map: list[int] = []
+    for i, rec in enumerate(records):
+        emb = rec.get('emb')
+        if emb is not None:
+            idx_map.append(i)
+            rows.append(emb)
+    if not rows:
+        return []
+    matrix = np.array(rows, dtype=np.float32)
+    norms = np.linalg.norm(matrix, axis=1).astype(np.float32)
+    qvec = np.array(search_vector, dtype=np.float32)
+    qnorm = float(np.linalg.norm(qvec))
+    scores = (matrix @ qvec) / (norms * qnorm + 1e-10)
+    mask = scores > min_score
+    if not np.any(mask):
+        return []
+    indices = np.where(mask)[0]
+    top_k = indices[np.argsort(-scores[indices])[:limit]]
+    return [records[idx_map[int(k)]] for k in top_k]
+
+
+def _filter_node_records(
+    records: list[dict[str, Any]],
+    group_ids: list[str] | None,
+    search_filter: SearchFilters,
+) -> list[dict[str, Any]]:
+    """Filter cached node records by group_id and node labels."""
+    result = records
+    if group_ids is not None:
+        result = [r for r in result if r.get('group_id') in group_ids]
+    if search_filter.node_labels is not None:
+        label_set = set(search_filter.node_labels)
+        result = [
+            r
+            for r in result
+            if isinstance(r.get('labels'), list) and label_set.intersection(r['labels'])
+        ]
+    return result
+
+
+def _filter_edge_records(
+    records: list[dict[str, Any]],
+    group_ids: list[str] | None,
+    search_filter: SearchFilters,
+) -> list[dict[str, Any]]:
+    """Filter cached edge records by group_id, edge_uuids, and edge_types."""
+    result = records
+    if group_ids is not None:
+        result = [r for r in result if r.get('group_id') in group_ids]
+    if search_filter.edge_uuids is not None:
+        uuid_set = set(search_filter.edge_uuids)
+        result = [r for r in result if r.get('uuid') in uuid_set]
+    if search_filter.edge_types is not None:
+        type_set = set(search_filter.edge_types)
+        result = [r for r in result if r.get('name') in type_set]
+    return result
+
+
+def _filter_community_records(
+    records: list[dict[str, Any]],
+    group_ids: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Filter cached community records by group_id."""
+    if group_ids is None:
+        return records
+    return [r for r in records if r.get('group_id') in group_ids]
 
 
 def calculate_cosine_similarity(vector1: list[float], vector2: list[float]) -> float:
@@ -413,6 +658,63 @@ async def edge_similarity_search(
             )
         else:
             return []
+    elif driver.provider == GraphProvider.FALKORDB:
+        scoped = search_filter.edge_uuids is not None or search_filter.edge_types is not None
+        if scoped:
+            # Scoped search: fetch matching edges directly (small result set)
+            query = (
+                """
+                MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity)
+                """
+                + filter_query
+                + """
+                WITH DISTINCT e, n, m, e.fact_embedding AS emb
+                WHERE emb IS NOT NULL
+                RETURN """
+                + get_entity_edge_return_query(driver.provider)
+                + """, emb"""
+            )
+            records, _, _ = await driver.execute_query(
+                query,
+                search_vector=search_vector,
+                limit=limit,
+                min_score=min_score,
+                routing_='r',
+                **filter_params,
+            )
+            ranked = _vectorized_cosine_rank(records, search_vector, min_score, limit)
+            edges = [get_entity_edge_from_record(r, driver.provider) for r in ranked]
+            return edges
+        else:
+            # Unscoped search: use the embedding cache
+            async with _edge_embedding_cache._get_lock():
+                if not _edge_embedding_cache.is_loaded:
+                    # Load ALL edge embeddings unfiltered so the cache is reusable
+                    # across calls with different group_ids/filters.
+                    cache_query = (
+                        """
+                        MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity)
+                        WITH DISTINCT e, n, m, e.fact_embedding AS emb
+                        WHERE emb IS NOT NULL
+                        RETURN """
+                        + get_entity_edge_return_query(driver.provider)
+                        + """, emb"""
+                    )
+                    all_records, _, _ = await driver.execute_query(
+                        cache_query,
+                        routing_='r',
+                    )
+                    _edge_embedding_cache.set(all_records)
+                    logger.debug(
+                        'BRUTEFORCE_EDGE_SEARCH: loaded %d items into cache',
+                        len(all_records),
+                    )
+                ranked = _edge_embedding_cache.search(search_vector, min_score, limit)
+            # Apply group_id and edge filters post-search
+            ranked = _filter_edge_records(ranked, group_ids, search_filter)
+            logger.debug('BRUTEFORCE_EDGE_SEARCH (cached): returning top %d', len(ranked))
+            edges = [get_entity_edge_from_record(r, driver.provider) for r in ranked]
+            return edges
     else:
         query = (
             match_query
@@ -753,6 +1055,35 @@ async def node_similarity_search(
             )
         else:
             return []
+    elif driver.provider == GraphProvider.FALKORDB:
+        async with _node_embedding_cache._get_lock():
+            if not _node_embedding_cache.is_loaded:
+                # Load ALL node embeddings unfiltered so the cache is reusable
+                # across calls with different group_ids/labels.
+                cache_query = (
+                    """
+                    MATCH (n:Entity)
+                    WITH n, n.name_embedding AS emb
+                    WHERE emb IS NOT NULL
+                    RETURN """
+                    + get_entity_node_return_query(driver.provider)
+                    + """, emb"""
+                )
+                all_records, _, _ = await driver.execute_query(
+                    cache_query,
+                    routing_='r',
+                )
+                _node_embedding_cache.set(all_records)
+                logger.debug(
+                    'BRUTEFORCE_NODE_SEARCH: loaded %d items into cache',
+                    len(all_records),
+                )
+            ranked = _node_embedding_cache.search(search_vector, min_score, limit)
+        # Apply group_id and label filters post-search
+        ranked = _filter_node_records(ranked, group_ids, search_filter)
+        logger.debug('BRUTEFORCE_NODE_SEARCH (cached): returning top %d', len(ranked))
+        nodes = [get_entity_node_from_record(r, driver.provider) for r in ranked]
+        return nodes
     else:
         query = (
             """
@@ -1137,6 +1468,35 @@ async def community_similarity_search(
             )
         else:
             return []
+    elif driver.provider == GraphProvider.FALKORDB:
+        async with _community_embedding_cache._get_lock():
+            if not _community_embedding_cache.is_loaded:
+                # Load ALL community embeddings unfiltered so the cache is reusable
+                # across calls with different group_ids.
+                cache_query = (
+                    """
+                    MATCH (c:Community)
+                    WITH c, c.name_embedding AS emb
+                    WHERE emb IS NOT NULL
+                    RETURN """
+                    + COMMUNITY_NODE_RETURN
+                    + """, emb"""
+                )
+                all_records, _, _ = await driver.execute_query(
+                    cache_query,
+                    routing_='r',
+                )
+                _community_embedding_cache.set(all_records)
+                logger.debug(
+                    'BRUTEFORCE_COMMUNITY_SEARCH: loaded %d items into cache',
+                    len(all_records),
+                )
+            ranked = _community_embedding_cache.search(search_vector, min_score, limit)
+        # Apply group_id filter post-search
+        ranked = _filter_community_records(ranked, group_ids)
+        logger.debug('BRUTEFORCE_COMMUNITY_SEARCH (cached): returning top %d', len(ranked))
+        communities = [get_community_node_from_record(r) for r in ranked]
+        return communities
     else:
         search_vector_var = '$search_vector'
         if driver.provider == GraphProvider.KUZU:

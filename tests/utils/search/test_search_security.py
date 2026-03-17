@@ -5,7 +5,6 @@ import pytest
 from pydantic import ValidationError
 
 from graphiti_core.driver.driver import GraphProvider
-from graphiti_core.driver.neo4j.operations.search_ops import _build_neo4j_fulltext_query
 from graphiti_core.errors import GroupIdValidationError, NodeLabelValidationError
 from graphiti_core.search.search import search
 from graphiti_core.search.search_config import SearchConfig
@@ -36,14 +35,18 @@ def test_node_search_filter_constructor_keeps_valid_label_expression():
 def test_node_search_filter_constructor_rejects_unsafe_labels_bypassing_pydantic():
     filters = SearchFilters.model_construct(node_labels=['Entity`) DETACH DELETE x //'])
 
-    with pytest.raises(NodeLabelValidationError, match='node_labels must start with a letter or underscore'):
+    with pytest.raises(
+        NodeLabelValidationError, match='node_labels must start with a letter or underscore'
+    ):
         node_search_filter_query_constructor(filters, GraphProvider.NEO4J)
 
 
 def test_edge_search_filter_constructor_rejects_unsafe_labels_bypassing_pydantic():
     filters = SearchFilters.model_construct(node_labels=['Entity`) DETACH DELETE x //'])
 
-    with pytest.raises(NodeLabelValidationError, match='node_labels must start with a letter or underscore'):
+    with pytest.raises(
+        NodeLabelValidationError, match='node_labels must start with a letter or underscore'
+    ):
         edge_search_filter_query_constructor(filters, GraphProvider.NEO4J)
 
 
@@ -55,8 +58,13 @@ def test_fulltext_query_rejects_invalid_group_ids():
 
 
 def test_build_neo4j_fulltext_query_rejects_invalid_group_ids():
+    # Import inside the test so collection still works when Neo4j extras are unavailable.
+    neo4j_search_ops = pytest.importorskip(
+        'graphiti_core.driver.neo4j.operations.search_ops',
+        reason='Neo4j driver extras not installed',
+    )
     with pytest.raises(GroupIdValidationError, match='must contain only alphanumeric'):
-        _build_neo4j_fulltext_query('test', ['bad"group'])
+        neo4j_search_ops._build_neo4j_fulltext_query('test', ['bad"group'])
 
 
 def test_falkordb_fulltext_query_rejects_invalid_group_ids():
