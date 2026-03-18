@@ -107,8 +107,20 @@ async def extract_nodes(
         raw_entities = await _extract_nodes_single(llm_client, episode, context)
         log_suffix = ''
 
-    # Filter empty names
-    filtered_entities = [e for e in raw_entities if e.name.strip()]
+    # Filter empty names and file-path entities (e.g. "ingestion/foo.docx").
+    # File paths contain a slash followed by a filename with a dot-extension.
+    # URLs (http://..., autodesk.com) are kept since they can be legitimate entities.
+    _FILE_PATH_RE = re.compile(r'[\\/][^/\\]+\.\w{1,5}$')
+
+    def _is_file_path(name: str) -> bool:
+        if '://' in name:
+            return False  # URL, not a file path
+        return bool(_FILE_PATH_RE.search(name))
+
+    filtered_entities = [
+        e for e in raw_entities
+        if e.name.strip() and not _is_file_path(e.name)
+    ]
 
     end = time()
     logger.debug(
