@@ -478,3 +478,90 @@ class TestWalWriterConcurrency:
         # Verify sequences are unique and ordered
         seqs = [e['seq'] for e in entries]
         assert sorted(seqs) == list(range(16))
+
+
+class TestWalWriterRefCounting:
+    """Test reference counting for shared WAL instances."""
+
+    @pytest.fixture
+    def wal_dir(self, tmp_path):
+        """Create a temporary WAL directory."""
+        return tmp_path / 'wal'
+
+    @pytest.mark.asyncio
+    async def test_close_clone_does_not_close_shared_wal(self, wal_dir):
+        """Closing a clone's reference should not close the shared WAL."""
+        writer = WalWriter(wal_dir)
+        writer.acquire()  # Simulate clone taking a reference
+
+        # Clone closes its reference
+        await writer.close()
+        assert writer.is_closed is False
+
+        # Original can still log
+        await writer.log_mutation('CREATE (n:Test)', {}, 'db')
+        assert writer.current_sequence == 1
+
+        # Original closes — now it's truly closed
+        await writer.close()
+        assert writer.is_closed is True
+
+    @pytest.mark.asyncio
+    async def test_multiple_acquires_require_matching_closes(self, wal_dir):
+        """Each acquire() requires a matching close() before the WAL shuts down."""
+        writer = WalWriter(wal_dir)
+        writer.acquire()
+        writer.acquire()
+
+        await writer.close()
+        assert writer.is_closed is False
+
+        await writer.close()
+        assert writer.is_closed is False
+
+        await writer.close()
+        assert writer.is_closed is True
+
+    @pytest.mark.asyncio
+    async def test_acquire_after_close_raises(self, wal_dir):
+        """Cannot acquire a reference on an already-closed WAL."""
+        writer = WalWriter(wal_dir)
+        await writer.close()
+
+        with pytest.raises(RuntimeError, match='Cannot acquire a closed WAL writer'):
+            writer.acquire()
+
+    @pytest.mark.asyncio
+    async def test_extra_close_after_shutdown_is_noop(self, wal_dir):
+        """Extra close() calls after the WAL is shut down are safe no-ops."""
+        writer = WalWriter(wal_dir)
+        await writer.close()
+        assert writer.is_closed is True
+
+        # Should not raise
+        await writer.close()
+        await writer.close()
+        assert writer.is_closed is True
+
+    @pytest.mark.asyncio
+    async def test_mutations_work_until_last_close(self, wal_dir):
+        """Mutations can be logged as long as at least one reference remains."""
+        writer = WalWriter(wal_dir)
+        writer.acquire()  # ref_count = 2
+
+        await writer.log_mutation('CREATE (n:A)', {}, 'db')
+        await writer.close()  # ref_count = 1, still open
+
+        await writer.log_mutation('CREATE (n:B)', {}, 'db')
+        await writer.close()  # ref_count = 0, closed
+
+        # After final close, mutation is dropped
+        await writer.log_mutation('CREATE (n:C)', {}, 'db')
+
+        files = list(wal_dir.glob('*.jsonl'))
+        with open(files[0]) as f:
+            lines = f.readlines()
+
+        assert len(lines) == 2
+        assert json.loads(lines[0])['cypher'] == 'CREATE (n:A)'
+        assert json.loads(lines[1])['cypher'] == 'CREATE (n:B)'
