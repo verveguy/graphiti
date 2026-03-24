@@ -14,14 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+from __future__ import annotations
+
 import asyncio
 import datetime
 import logging
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from falkordb import Graph as FalkorGraph
     from falkordb.asyncio import FalkorDB
+
+    from graphiti_core.driver.wal import WalWriter
 else:
     try:
         from falkordb import Graph as FalkorGraph
@@ -120,6 +125,8 @@ class FalkorDriver(GraphDriver):
         password: str | None = None,
         falkor_db: FalkorDB | None = None,
         database: str = 'default_db',
+        wal_dir: str | Path | None = None,
+        wal_writer: WalWriter | None = None,
     ):
         """
         Initialize the FalkorDB driver.
@@ -135,6 +142,8 @@ class FalkorDriver(GraphDriver):
         password (str | None): The password for authentication (if required).
         falkor_db (FalkorDB | None): An existing FalkorDB instance to use instead of creating a new one.
         database (str): The name of the database to connect to. Defaults to 'default_db'.
+        wal_dir (str | Path | None): Directory for WAL files. If provided, enables WAL logging.
+        wal_writer (WalWriter | None): Existing WalWriter to reuse (for cloned drivers).
         """
         super().__init__()
         self._database = database
@@ -143,6 +152,15 @@ class FalkorDriver(GraphDriver):
             self.client = falkor_db
         else:
             self.client = FalkorDB(host=host, port=port, username=username, password=password)
+
+        # Initialize WAL writer
+        self._wal: WalWriter | None = None
+        if wal_writer is not None:
+            self._wal = wal_writer
+        elif wal_dir is not None:
+            from graphiti_core.driver.wal import WalWriter
+
+            self._wal = WalWriter(wal_dir)
 
         # Instantiate FalkorDB operations
         self._entity_node_ops = FalkorEntityNodeOperations()
@@ -235,6 +253,12 @@ class FalkorDriver(GraphDriver):
             logger.error(f'Error executing FalkorDB query: {e}\n{cypher_query_}\n{params}')
             raise
 
+        # Log mutation to WAL after successful execution
+        if self._wal is not None:
+            await self._wal.log_mutation(
+                cypher_query_, cast(dict[str, Any], params), database=self._database
+            )
+
         # Convert the result header to a list of strings
         header = [h[1] for h in result.header]
 
@@ -257,6 +281,10 @@ class FalkorDriver(GraphDriver):
 
     async def close(self) -> None:
         """Close the driver connection."""
+        # Close WAL writer if enabled
+        if self._wal is not None:
+            await self._wal.close()
+
         if hasattr(self.client, 'aclose'):
             await self.client.aclose()  # type: ignore[reportUnknownMemberType]
         elif hasattr(self.client.connection, 'aclose'):
@@ -303,7 +331,7 @@ class FalkorDriver(GraphDriver):
         for query in index_queries:
             await self.execute_query(query)
 
-    def clone(self, database: str) -> 'GraphDriver':
+    def clone(self, database: str) -> GraphDriver:
         """
         Returns a shallow copy of this driver with a different default database.
         Reuses the same connection (e.g. FalkorDB, Neo4j).
