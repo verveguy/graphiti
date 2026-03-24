@@ -76,6 +76,7 @@ class WalWriter:
         self._session_id = uuid.uuid4().hex[:6]
         self._file_seq = 0
         self._closed = False
+        self._ref_count = 1  # Reference counting for shared WAL instances
 
         # Create WAL directory if it doesn't exist
         self._wal_dir.mkdir(parents=True, exist_ok=True)
@@ -273,15 +274,35 @@ class WalWriter:
         else:
             return value
 
+    def acquire(self) -> None:
+        """
+        Increment the reference count for shared WAL instances.
+
+        Call this when sharing the WAL writer with a cloned driver so that
+        close() only truly closes when the last user releases its reference.
+        """
+        if self._closed:
+            raise RuntimeError('Cannot acquire a closed WAL writer')
+        self._ref_count += 1
+        logger.debug(f'WAL: Acquired reference, ref_count={self._ref_count}')
+
     async def close(self) -> None:
         """
-        Close the WAL writer.
+        Release one reference to the WAL writer.
 
-        Flushes any buffered data and closes the file handle.
-        This method is idempotent - calling it multiple times is safe.
+        The underlying file is only closed when the last reference is released.
+        This method is idempotent - calling it multiple times is safe (each call
+        decrements the reference count at most once, and extra calls after the
+        count reaches zero are no-ops).
         """
         async with self._lock:
             if self._closed:
+                return
+
+            self._ref_count -= 1
+            logger.debug(f'WAL: Released reference, ref_count={self._ref_count}')
+
+            if self._ref_count > 0:
                 return
 
             self._closed = True
