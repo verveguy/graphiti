@@ -79,8 +79,12 @@ logger = logging.getLogger(__name__)
 class FalkorDriverSession(GraphDriverSession):
     provider = GraphProvider.FALKORDB
 
-    def __init__(self, graph: FalkorGraph):
+    def __init__(
+        self, graph: FalkorGraph, wal: WalWriter | None = None, database: str | None = None
+    ):
         self.graph = graph
+        self._wal = wal
+        self._database = database
 
     async def __aenter__(self):
         return self
@@ -103,10 +107,20 @@ class FalkorDriverSession(GraphDriverSession):
             for cypher, params in query:
                 params = convert_datetimes_to_strings(params)
                 await self.graph.query(str(cypher), params)  # type: ignore[reportUnknownArgumentType]
+                # Log mutation to WAL after successful execution
+                if self._wal is not None:
+                    await self._wal.log_mutation(
+                        str(cypher), cast(dict[str, Any], params), database=self._database or ''
+                    )
         else:
             params = dict(kwargs)
             params = convert_datetimes_to_strings(params)
             await self.graph.query(str(query), params)  # type: ignore[reportUnknownArgumentType]
+            # Log mutation to WAL after successful execution
+            if self._wal is not None:
+                await self._wal.log_mutation(
+                    str(query), cast(dict[str, Any], params), database=self._database or ''
+                )
         # Assuming `graph.query` is async (ideal); otherwise, wrap in executor
         return None
 
@@ -277,7 +291,11 @@ class FalkorDriver(GraphDriver):
         return records, header, None
 
     def session(self, database: str | None = None) -> GraphDriverSession:
-        return FalkorDriverSession(self._get_graph(database))
+        return FalkorDriverSession(
+            self._get_graph(database),
+            wal=self._wal,
+            database=database or self._database,
+        )
 
     async def close(self) -> None:
         """Close the driver connection."""
@@ -352,14 +370,15 @@ class FalkorDriver(GraphDriver):
         """
         Returns a shallow copy of this driver with a different default database.
         Reuses the same connection (e.g. FalkorDB, Neo4j).
+        Cloned drivers share the same WAL writer instance.
         """
         if database == self._database:
             cloned = self
         elif database == self.default_group_id:
-            cloned = FalkorDriver(falkor_db=self.client)
+            cloned = FalkorDriver(falkor_db=self.client, wal_writer=self._wal)
         else:
             # Create a new instance of FalkorDriver with the same connection but a different database
-            cloned = FalkorDriver(falkor_db=self.client, database=database)
+            cloned = FalkorDriver(falkor_db=self.client, database=database, wal_writer=self._wal)
 
         return cloned
 
