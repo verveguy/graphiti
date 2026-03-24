@@ -403,6 +403,68 @@ class TestWalIntegration:
             self.driver = FalkorDriver()
         self.driver.client = self.mock_client
 
+    @pytest.mark.asyncio
+    @unittest.skipIf(not HAS_FALKORDB, 'FalkorDB is not installed')
+    async def test_execute_query_logs_mutations_to_wal(self, tmp_path):
+        """Test that execute_query() logs mutations to WAL."""
+        wal_dir = tmp_path / 'wal'
+        mock_client = MagicMock()
+        mock_graph = MagicMock()
+        mock_result = MagicMock()
+        mock_result.header = [('col', 'n')]
+        mock_result.result_set = []
+        mock_graph.query = AsyncMock(return_value=mock_result)
+        mock_client.select_graph.return_value = mock_graph
+        mock_client.aclose = AsyncMock()
+
+        with patch('graphiti_core.driver.falkordb_driver.FalkorDB'):
+            driver = FalkorDriver(wal_dir=str(wal_dir), database='test_db')
+        driver.client = mock_client
+
+        await driver.execute_query('MERGE (n:Entity {uuid: $uuid}) SET n.name = $name', uuid='abc', name='Alice')
+
+        await driver.close()
+
+        import json
+
+        wal_files = list(wal_dir.glob('*.jsonl'))
+        assert len(wal_files) == 1
+
+        with open(wal_files[0]) as f:
+            entry = json.loads(f.readline())
+        assert entry['cypher'] == 'MERGE (n:Entity {uuid: $uuid}) SET n.name = $name'
+        assert entry['params']['uuid'] == 'abc'
+        assert entry['params']['name'] == 'Alice'
+        assert entry['db'] == 'test_db'
+
+    @pytest.mark.asyncio
+    @unittest.skipIf(not HAS_FALKORDB, 'FalkorDB is not installed')
+    async def test_execute_query_skips_read_only_wal(self, tmp_path):
+        """Test that execute_query() does NOT log read-only queries to WAL."""
+        wal_dir = tmp_path / 'wal'
+        mock_client = MagicMock()
+        mock_graph = MagicMock()
+        mock_result = MagicMock()
+        mock_result.header = []
+        mock_result.result_set = []
+        mock_graph.query = AsyncMock(return_value=mock_result)
+        mock_client.select_graph.return_value = mock_graph
+        mock_client.aclose = AsyncMock()
+
+        with patch('graphiti_core.driver.falkordb_driver.FalkorDB'):
+            driver = FalkorDriver(wal_dir=str(wal_dir))
+        driver.client = mock_client
+
+        await driver.execute_query('MATCH (n) RETURN n')
+
+        await driver.close()
+
+        wal_files = list(wal_dir.glob('*.jsonl'))
+        if wal_files:
+            with open(wal_files[0]) as f:
+                content = f.read().strip()
+            assert content == '', 'Read-only query should not be logged to WAL'
+
     @unittest.skipIf(not HAS_FALKORDB, 'FalkorDB is not installed')
     def test_session_receives_wal_from_driver(self, tmp_path):
         """Test that session receives WAL writer from parent driver."""
