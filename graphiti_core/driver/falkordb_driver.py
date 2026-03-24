@@ -353,15 +353,21 @@ class FalkorDriver(GraphDriver):
         """
         Returns a shallow copy of this driver with a different default database.
         Reuses the same connection (e.g. FalkorDB, Neo4j).
-        Cloned drivers share the same WAL writer instance.
+        Cloned drivers share the same WAL writer instance (reference counted).
         """
         if database == self._database:
             cloned = self
-        elif database == self.default_group_id:
-            cloned = FalkorDriver(falkor_db=self.client, wal_writer=self._wal)
         else:
-            # Create a new instance of FalkorDriver with the same connection but a different database
-            cloned = FalkorDriver(falkor_db=self.client, database=database, wal_writer=self._wal)
+            # Acquire a reference to the shared WAL before passing it to the clone
+            if self._wal is not None:
+                self._wal.acquire()
+
+            if database == self.default_group_id:
+                cloned = FalkorDriver(falkor_db=self.client, wal_writer=self._wal)
+            else:
+                cloned = FalkorDriver(
+                    falkor_db=self.client, database=database, wal_writer=self._wal
+                )
 
         return cloned
 
