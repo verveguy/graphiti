@@ -347,7 +347,12 @@ class FalkorDriver(GraphDriver):
             await self.delete_all_indexes()
         index_queries = get_range_indices(self.provider) + get_fulltext_indices(self.provider)
         for query in index_queries:
-            await self.execute_query(query)
+            try:
+                await self.execute_query(query)
+            except Exception as e:
+                # Index creation is idempotent — transient connection errors
+                # or concurrent index builds are non-fatal
+                logger.warning(f'Index creation skipped (will retry on next startup): {e}')
 
     def clone(self, database: str) -> GraphDriver:
         """
