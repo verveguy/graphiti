@@ -404,6 +404,7 @@ class TestWalWriter:
         await writer.close()
 
 
+
 class TestWalWriterConcurrency:
     """Test concurrent write handling."""
 
