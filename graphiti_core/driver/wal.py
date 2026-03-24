@@ -180,7 +180,11 @@ class WalWriter:
         return self._wal_dir / f'{timestamp}_{self._session_id}_{self._file_seq:04d}.jsonl'
 
     def _ensure_file_open(self) -> None:
-        """Ensure we have an open file handle, creating a new file if needed."""
+        """Ensure we have an open file handle, creating a new file if needed.
+
+        Uses synchronous I/O — safe for local filesystem (microsecond-scale).
+        Would block the event loop on NFS or slow mounts.
+        """
         if self._file is None:
             filename = self._get_current_filename()
             # File stays open for multiple writes and is closed explicitly via close()

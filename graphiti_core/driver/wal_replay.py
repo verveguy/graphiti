@@ -30,6 +30,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _scan_databases(wal_files: list[Path], default: str) -> set[str]:
+    """Scan WAL files for all distinct database names."""
+    databases: set[str] = set()
+    for wal_file in wal_files:
+        with open(wal_file, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    databases.add(entry.get('db', default))
+                except json.JSONDecodeError:
+                    continue
+    if not databases:
+        databases.add(default)
+    return databases
+
+
 async def replay_wal(
     wal_dir: str | Path,
     host: str = 'localhost',
@@ -74,12 +93,17 @@ async def replay_wal(
         if not dry_run:
             from graphiti_core.driver.falkordb_driver import FalkorDriver
 
+            # Scan WAL for all distinct databases so we can build indices on each
+            databases = _scan_databases(wal_files, default=database)
+
             # Create driver WITHOUT WAL to avoid re-logging replayed mutations
             driver = FalkorDriver(host=host, port=int(port), database=database)
 
-            # Build indices first — WAL excludes index DDL
-            logger.info('Building indices and constraints...')
-            await driver.build_indices_and_constraints()
+            # Build indices on every database found in the WAL
+            for db_name in databases:
+                logger.info('Building indices and constraints on %s...', db_name)
+                db_driver = driver if db_name == database else driver.clone(db_name)
+                await db_driver.build_indices_and_constraints()
 
         for wal_file in wal_files:
             logger.info('Replaying %s...', wal_file.name)

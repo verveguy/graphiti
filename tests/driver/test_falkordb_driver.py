@@ -619,6 +619,45 @@ class TestCloneWithWal:
 
     @pytest.mark.asyncio
     @unittest.skipIf(not HAS_FALKORDB, 'FalkorDB is not installed')
+    async def test_clone_close_does_not_kill_parent_wal(self, tmp_path):
+        """Test that closing a clone doesn't close the shared WAL for the parent."""
+        wal_dir = tmp_path / 'wal'
+        mock_client = MagicMock()
+        mock_graph = MagicMock()
+        mock_result = MagicMock()
+        mock_result.header = []
+        mock_result.result_set = []
+        mock_graph.query = AsyncMock(return_value=mock_result)
+        mock_client.select_graph.return_value = mock_graph
+        mock_client.aclose = AsyncMock()
+
+        with patch('graphiti_core.driver.falkordb_driver.FalkorDB'):
+            driver = FalkorDriver(wal_dir=str(wal_dir), database='db1')
+        driver.client = mock_client
+
+        cloned = driver.clone('db2')
+        cloned.client = mock_client
+
+        # Close the clone — should NOT close the shared WAL
+        await cloned.close()
+
+        # Parent should still be able to log mutations
+        await driver.execute_query('CREATE (n:AfterCloneClose)')
+        await driver.close()
+
+        import json
+
+        wal_files = list(wal_dir.glob('*.jsonl'))
+        assert len(wal_files) == 1
+
+        with open(wal_files[0]) as f:
+            entries = [json.loads(line) for line in f]
+
+        assert len(entries) == 1
+        assert entries[0]['cypher'] == 'CREATE (n:AfterCloneClose)'
+
+    @pytest.mark.asyncio
+    @unittest.skipIf(not HAS_FALKORDB, 'FalkorDB is not installed')
     async def test_cloned_driver_logs_to_same_wal(self, tmp_path):
         """Test that cloned drivers write to the same WAL files."""
         wal_dir = tmp_path / 'wal'
