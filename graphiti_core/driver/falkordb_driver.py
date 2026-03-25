@@ -110,7 +110,7 @@ class FalkorDriverSession(GraphDriverSession):
                 # Log mutation to WAL after successful execution
                 if self._wal is not None:
                     await self._wal.log_mutation(
-                        str(cypher), cast(dict[str, Any], params), database=self._database or ''
+                        str(cypher), cast(dict[str, Any], params), database=self._database
                     )
         else:
             params = dict(kwargs)
@@ -119,7 +119,7 @@ class FalkorDriverSession(GraphDriverSession):
             # Log mutation to WAL after successful execution
             if self._wal is not None:
                 await self._wal.log_mutation(
-                    str(query), cast(dict[str, Any], params), database=self._database or ''
+                    str(query), cast(dict[str, Any], params), database=self._database
                 )
         # Assuming `graph.query` is async (ideal); otherwise, wrap in executor
         return None

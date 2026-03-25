@@ -158,12 +158,12 @@ class TestWalWriter:
         return tmp_path / 'wal'
 
     @pytest.fixture
-    def wal_writer(self, wal_dir):
+    async def wal_writer(self, wal_dir):
         """Create a WalWriter instance."""
         writer = WalWriter(wal_dir, max_events_per_file=5)
         yield writer
         # Cleanup - close if not already closed
-        asyncio.get_event_loop().run_until_complete(writer.close())
+        await writer.close()
 
     @pytest.mark.asyncio
     async def test_creates_wal_directory(self, wal_dir):
