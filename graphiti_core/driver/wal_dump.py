@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from graphiti_core.driver.wal import WalWriter
+from graphiti_core.driver.wal import DEFAULT_MAX_EVENTS_PER_FILE, WalWriter
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ async def dump_wal(
     port: int = 6379,
     database: str = 'default_db',
     wal_dir: str | Path = '.',
-    max_events_per_file: int = 250,
+    max_events_per_file: int = DEFAULT_MAX_EVENTS_PER_FILE,
 ) -> int:
     """
     Dump the current state of a FalkorDB database as WAL entries.
