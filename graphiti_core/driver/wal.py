@@ -27,6 +27,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Default max events per WAL file before rotation (~1MB per file at ~20KB/event).
+# Keeps the active tip file small for git-friendly commits.
+DEFAULT_MAX_EVENTS_PER_FILE = 50
+
 # Mutation keywords that indicate a write operation (case-insensitive)
 _MUTATION_KEYWORDS = frozenset({'CREATE', 'MERGE', 'SET', 'DELETE', 'DETACH', 'DROP', 'REMOVE'})
 
@@ -59,7 +63,7 @@ class WalWriter:
     {timestamp}_{session_uuid_short}_{file_seq:04d}.jsonl
     """
 
-    def __init__(self, wal_dir: str | Path, max_events_per_file: int = 250):
+    def __init__(self, wal_dir: str | Path, max_events_per_file: int = DEFAULT_MAX_EVENTS_PER_FILE):
         """
         Initialize the WAL writer.
 
