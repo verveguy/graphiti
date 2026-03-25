@@ -84,7 +84,7 @@ class FalkorDriverSession(GraphDriverSession):
     ):
         self.graph = graph
         self._wal = wal
-        self._database = database
+        self._database = database or ''
 
     async def __aenter__(self):
         return self
@@ -167,14 +167,18 @@ class FalkorDriver(GraphDriver):
         else:
             self.client = FalkorDB(host=host, port=port, username=username, password=password)
 
-        # Initialize WAL writer
+        # Initialize WAL writer.
+        # _wal_owner is True only for the driver that created the WalWriter.
+        # Clones share the reference but don't own it — only the owner closes it.
         self._wal: WalWriter | None = None
+        self._wal_owner = False
         if wal_writer is not None:
             self._wal = wal_writer
         elif wal_dir is not None:
             from graphiti_core.driver.wal import WalWriter
 
             self._wal = WalWriter(wal_dir)
+            self._wal_owner = True
 
         # Instantiate FalkorDB operations
         self._entity_node_ops = FalkorEntityNodeOperations()
@@ -299,8 +303,9 @@ class FalkorDriver(GraphDriver):
 
     async def close(self) -> None:
         """Close the driver connection."""
-        # Close WAL writer if enabled
-        if self._wal is not None:
+        # Only the owning driver (the one that created the WalWriter) closes it.
+        # Clones share the WAL reference but don't own its lifecycle.
+        if self._wal is not None and self._wal_owner:
             await self._wal.close()
 
         if hasattr(self.client, 'aclose'):
@@ -366,10 +371,9 @@ class FalkorDriver(GraphDriver):
         for query in index_queries:
             try:
                 await self.execute_query(query)
-            except Exception as e:
-                # Index creation is idempotent — transient connection errors
-                # or concurrent index builds are non-fatal
-                logger.warning(f'Index creation skipped (will retry on next startup): {e}')
+            except (ConnectionError, OSError, TimeoutError) as e:
+                # Transient connection/timeout errors are non-fatal for idempotent index creation
+                logger.warning(f'Index creation skipped (will retry on next startup): {query[:80]}: {e}')
 
     def clone(self, database: str) -> GraphDriver:
         """
@@ -380,10 +384,6 @@ class FalkorDriver(GraphDriver):
         if database == self._database:
             cloned = self
         else:
-            # Acquire a reference to the shared WAL before passing it to the clone
-            if self._wal is not None:
-                self._wal.acquire()
-
             if database == self.default_group_id:
                 cloned = FalkorDriver(falkor_db=self.client, wal_writer=self._wal)
             else:
