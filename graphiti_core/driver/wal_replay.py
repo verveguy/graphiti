@@ -30,25 +30,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _scan_databases(wal_files: list[Path], default: str) -> set[str]:
-    """Scan WAL files for all distinct database names."""
-    databases: set[str] = set()
-    for wal_file in wal_files:
-        with open(wal_file, encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    databases.add(entry.get('db', default))
-                except json.JSONDecodeError:
-                    continue
-    if not databases:
-        databases.add(default)
-    return databases
-
-
 async def replay_wal(
     wal_dir: str | Path,
     host: str = 'localhost',
@@ -68,7 +49,7 @@ async def replay_wal(
         wal_dir: Directory containing WAL .jsonl files.
         host: FalkorDB host.
         port: FalkorDB port.
-        database: Target database name. If None, uses the db field from each WAL event.
+        database: Default target database name. Events that specify a ``db`` field override this value.
         from_seq: Skip events with seq < from_seq (for partial replay).
         dry_run: If True, parse and validate but don't execute mutations.
 
@@ -89,21 +70,14 @@ async def replay_wal(
     skipped = 0
     errors = 0
 
+    indexed_databases: set[str] = set()
+
     try:
         if not dry_run:
             from graphiti_core.driver.falkordb_driver import FalkorDriver
 
-            # Scan WAL for all distinct databases so we can build indices on each
-            databases = _scan_databases(wal_files, default=database)
-
             # Create driver WITHOUT WAL to avoid re-logging replayed mutations
             driver = FalkorDriver(host=host, port=int(port), database=database)
-
-            # Build indices on every database found in the WAL
-            for db_name in databases:
-                logger.info('Building indices and constraints on %s...', db_name)
-                db_driver = driver if db_name == database else driver.clone(db_name)
-                await db_driver.build_indices_and_constraints()
 
         for wal_file in wal_files:
             logger.info('Replaying %s...', wal_file.name)
@@ -136,8 +110,17 @@ async def replay_wal(
                         continue
 
                     try:
-                        # Use the event's db field to target the correct database
                         assert driver is not None
+                        # Build indices lazily on first encounter of each database
+                        if event_db not in indexed_databases:
+                            logger.info('Building indices on %s...', event_db)
+                            db_driver = (
+                                driver if event_db == database else driver.clone(event_db)
+                            )
+                            await db_driver.build_indices_and_constraints()
+                            indexed_databases.add(event_db)
+
+                        # Use the event's db field to target the correct database
                         graph = driver._get_graph(event_db)
                         await graph.query(cypher, params)  # type: ignore[reportUnknownMemberType]
                         replayed += 1
