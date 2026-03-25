@@ -14,14 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+from __future__ import annotations
+
 import asyncio
 import datetime
 import logging
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from falkordb import Graph as FalkorGraph
     from falkordb.asyncio import FalkorDB
+
+    from graphiti_core.driver.wal import WalWriter
 else:
     try:
         from falkordb import Graph as FalkorGraph
@@ -74,8 +79,12 @@ logger = logging.getLogger(__name__)
 class FalkorDriverSession(GraphDriverSession):
     provider = GraphProvider.FALKORDB
 
-    def __init__(self, graph: FalkorGraph):
+    def __init__(
+        self, graph: FalkorGraph, wal: WalWriter | None = None, database: str | None = None
+    ):
         self.graph = graph
+        self._wal = wal
+        self._database = database
 
     async def __aenter__(self):
         return self
@@ -98,10 +107,20 @@ class FalkorDriverSession(GraphDriverSession):
             for cypher, params in query:
                 params = convert_datetimes_to_strings(params)
                 await self.graph.query(str(cypher), params)  # type: ignore[reportUnknownArgumentType]
+                # Log mutation to WAL after successful execution
+                if self._wal is not None:
+                    await self._wal.log_mutation(
+                        str(cypher), cast(dict[str, Any], params), database=self._database
+                    )
         else:
             params = dict(kwargs)
             params = convert_datetimes_to_strings(params)
             await self.graph.query(str(query), params)  # type: ignore[reportUnknownArgumentType]
+            # Log mutation to WAL after successful execution
+            if self._wal is not None:
+                await self._wal.log_mutation(
+                    str(query), cast(dict[str, Any], params), database=self._database
+                )
         # Assuming `graph.query` is async (ideal); otherwise, wrap in executor
         return None
 
@@ -120,6 +139,8 @@ class FalkorDriver(GraphDriver):
         password: str | None = None,
         falkor_db: FalkorDB | None = None,
         database: str = 'default_db',
+        wal_dir: str | Path | None = None,
+        wal_writer: WalWriter | None = None,
     ):
         """
         Initialize the FalkorDB driver.
@@ -135,6 +156,8 @@ class FalkorDriver(GraphDriver):
         password (str | None): The password for authentication (if required).
         falkor_db (FalkorDB | None): An existing FalkorDB instance to use instead of creating a new one.
         database (str): The name of the database to connect to. Defaults to 'default_db'.
+        wal_dir (str | Path | None): Directory for WAL files. If provided, enables WAL logging.
+        wal_writer (WalWriter | None): Existing WalWriter to reuse (for cloned drivers).
         """
         super().__init__()
         self._database = database
@@ -143,6 +166,15 @@ class FalkorDriver(GraphDriver):
             self.client = falkor_db
         else:
             self.client = FalkorDB(host=host, port=port, username=username, password=password)
+
+        # Initialize WAL writer
+        self._wal: WalWriter | None = None
+        if wal_writer is not None:
+            self._wal = wal_writer
+        elif wal_dir is not None:
+            from graphiti_core.driver.wal import WalWriter
+
+            self._wal = WalWriter(wal_dir)
 
         # Instantiate FalkorDB operations
         self._entity_node_ops = FalkorEntityNodeOperations()
@@ -235,6 +267,12 @@ class FalkorDriver(GraphDriver):
             logger.error(f'Error executing FalkorDB query: {e}\n{cypher_query_}\n{params}')
             raise
 
+        # Log mutation to WAL after successful execution
+        if self._wal is not None:
+            await self._wal.log_mutation(
+                cypher_query_, cast(dict[str, Any], params), database=self._database
+            )
+
         # Convert the result header to a list of strings
         header = [h[1] for h in result.header]
 
@@ -253,10 +291,18 @@ class FalkorDriver(GraphDriver):
         return records, header, None
 
     def session(self, database: str | None = None) -> GraphDriverSession:
-        return FalkorDriverSession(self._get_graph(database))
+        return FalkorDriverSession(
+            self._get_graph(database),
+            wal=self._wal,
+            database=database or self._database,
+        )
 
     async def close(self) -> None:
         """Close the driver connection."""
+        # Close WAL writer if enabled
+        if self._wal is not None:
+            await self._wal.close()
+
         if hasattr(self.client, 'aclose'):
             await self.client.aclose()  # type: ignore[reportUnknownMemberType]
         elif hasattr(self.client.connection, 'aclose'):
@@ -318,20 +364,32 @@ class FalkorDriver(GraphDriver):
             + get_vector_indices(self.provider)
         )
         for query in index_queries:
-            await self.execute_query(query)
+            try:
+                await self.execute_query(query)
+            except Exception as e:
+                # Index creation is idempotent — transient connection errors
+                # or concurrent index builds are non-fatal
+                logger.warning(f'Index creation skipped (will retry on next startup): {e}')
 
-    def clone(self, database: str) -> 'GraphDriver':
+    def clone(self, database: str) -> GraphDriver:
         """
         Returns a shallow copy of this driver with a different default database.
         Reuses the same connection (e.g. FalkorDB, Neo4j).
+        Cloned drivers share the same WAL writer instance (reference counted).
         """
         if database == self._database:
             cloned = self
-        elif database == self.default_group_id:
-            cloned = FalkorDriver(falkor_db=self.client)
         else:
-            # Create a new instance of FalkorDriver with the same connection but a different database
-            cloned = FalkorDriver(falkor_db=self.client, database=database)
+            # Acquire a reference to the shared WAL before passing it to the clone
+            if self._wal is not None:
+                self._wal.acquire()
+
+            if database == self.default_group_id:
+                cloned = FalkorDriver(falkor_db=self.client, wal_writer=self._wal)
+            else:
+                cloned = FalkorDriver(
+                    falkor_db=self.client, database=database, wal_writer=self._wal
+                )
 
         return cloned
 
