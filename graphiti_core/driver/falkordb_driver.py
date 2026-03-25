@@ -351,10 +351,20 @@ class FalkorDriver(GraphDriver):
         if delete_existing:
             await self.delete_all_indexes()
         index_queries = get_range_indices(self.provider) + get_fulltext_indices(self.provider)
+        # Build the tuple of catchable connection errors.
+        # redis.exceptions.ConnectionError doesn't inherit from builtin ConnectionError.
+        _conn_errors: tuple[type[Exception], ...] = (ConnectionError, OSError, TimeoutError)
+        try:
+            from redis.exceptions import ConnectionError as RedisConnectionError
+
+            _conn_errors = (*_conn_errors, RedisConnectionError)
+        except ImportError:
+            pass
+
         for query in index_queries:
             try:
                 await self.execute_query(query)
-            except (ConnectionError, OSError, TimeoutError) as e:
+            except _conn_errors as e:
                 # Transient connection/timeout errors are non-fatal for idempotent index creation
                 logger.warning(f'Index creation skipped (will retry on next startup): {query[:80]}: {e}')
 
