@@ -28,8 +28,8 @@ from graphiti_core.driver.wal import DEFAULT_MAX_EVENTS_PER_FILE, WalWriter
 logger = logging.getLogger(__name__)
 
 # Properties that are stored as vector embeddings in FalkorDB.
-# During replay these need vecf32() wrapping, but in the WAL they're
-# stored as plain float arrays and the replay handles conversion.
+# WAL entries emitted by this module already wrap these in vecf32($...)
+# in the generated Cypher; wal_replay.py executes that Cypher as-is.
 _VECTOR_PROPERTIES = frozenset({'name_embedding', 'fact_embedding'})
 
 # Internal FalkorDB properties to exclude from dump
@@ -230,8 +230,8 @@ def main() -> None:
     parser.add_argument(
         '--max-events-per-file',
         type=int,
-        default=10_000,
-        help='Max events per WAL file (default: 10000)',
+        default=DEFAULT_MAX_EVENTS_PER_FILE,
+        help=f'Max events per WAL file (default: {DEFAULT_MAX_EVENTS_PER_FILE})',
     )
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose logging')
 

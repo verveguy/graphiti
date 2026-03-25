@@ -103,32 +103,42 @@ class WalWriter:
             except (ValueError, IndexError):
                 pass
 
-            # Read last line to get max sequence
+            # Read last line to get max sequence.
+            # Lines can exceed 8KB (embedding vectors), so read backwards
+            # in growing chunks until a complete JSON line is found.
             try:
                 with open(wal_file, 'rb') as f:
-                    # Seek to end and read backwards to find last line
-                    f.seek(0, 2)  # Seek to end
+                    f.seek(0, 2)
                     file_size = f.tell()
                     if file_size == 0:
                         continue
 
-                    # Read last chunk (usually enough for one line)
-                    chunk_size = min(8192, file_size)
-                    f.seek(file_size - chunk_size)
-                    chunk = f.read()
+                    chunk_size = 8192
+                    position = file_size
+                    buffer = b''
 
-                    # Find last complete line
-                    lines = chunk.split(b'\n')
-                    for line in reversed(lines):
-                        line = line.strip()
-                        if line:
-                            try:
-                                entry = json.loads(line)
-                                if 'seq' in entry:
-                                    max_seq = max(max_seq, entry['seq'])
-                                    break
-                            except json.JSONDecodeError:
-                                continue
+                    while position > 0:
+                        read_size = min(chunk_size, position)
+                        position -= read_size
+                        f.seek(position)
+                        buffer = f.read(read_size) + buffer
+
+                        # Try parsing lines from the end of the buffer
+                        lines = buffer.split(b'\n')
+                        for line in reversed(lines):
+                            line = line.strip()
+                            if line:
+                                try:
+                                    entry = json.loads(line)
+                                    if 'seq' in entry:
+                                        max_seq = max(max_seq, entry['seq'])
+                                        break
+                                except json.JSONDecodeError:
+                                    continue
+                        else:
+                            # No valid line found yet, read more
+                            continue
+                        break  # Found a valid entry, stop reading
             except OSError as e:
                 logger.warning(f'Error reading WAL file {wal_file}: {e}')
 
