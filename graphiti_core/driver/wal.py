@@ -59,7 +59,7 @@ class WalWriter:
     {timestamp}_{session_uuid_short}_{file_seq:04d}.jsonl
     """
 
-    def __init__(self, wal_dir: str | Path, max_events_per_file: int = 10_000):
+    def __init__(self, wal_dir: str | Path, max_events_per_file: int = 250):
         """
         Initialize the WAL writer.
 

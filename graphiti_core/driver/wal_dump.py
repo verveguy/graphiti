@@ -41,7 +41,7 @@ async def dump_wal(
     port: int = 6379,
     database: str = 'default_db',
     wal_dir: str | Path = '.',
-    max_events_per_file: int = 10_000,
+    max_events_per_file: int = 250,
 ) -> int:
     """
     Dump the current state of a FalkorDB database as WAL entries.
