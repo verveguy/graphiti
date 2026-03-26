@@ -215,6 +215,16 @@ class WalWriter:
             self._file_seq += 1
             logger.debug(f'WAL: Rotated to file seq {self._file_seq}')
 
+    async def rotate(self) -> None:
+        """Close the current WAL file so it becomes immutable.
+
+        The next call to log_mutation() will lazily open a new file.
+        Safe to call when no file is open (no-op).
+        """
+        async with self._lock:
+            if self._file is not None:
+                self._rotate_file()
+
     async def log_mutation(self, cypher: str, params: dict[str, Any], database: str) -> None:
         """
         Log a mutation to the WAL if it passes filtering.
