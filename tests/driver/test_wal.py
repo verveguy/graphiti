@@ -403,6 +403,49 @@ class TestWalWriter:
 
         await writer.close()
 
+    @pytest.mark.asyncio
+    async def test_rotate_closes_file_and_increments_seq(self, wal_dir):
+        """rotate() closes the current file; next write opens a new one."""
+        writer = WalWriter(wal_dir, max_events_per_file=100)
+
+        # Write one mutation to open a file
+        await writer.log_mutation('CREATE (n:Test1)', {}, 'db')
+        assert writer._file is not None
+        initial_file_seq = writer._file_seq
+
+        # Rotate
+        await writer.rotate()
+        assert writer._file is None
+        assert writer._file_seq == initial_file_seq + 1
+
+        # Write another mutation — should open a new file
+        await writer.log_mutation('CREATE (n:Test2)', {}, 'db')
+        assert writer._file is not None
+
+        await writer.close()
+
+        # Should have 2 files: one from before rotate, one from after
+        files = sorted(wal_dir.glob('*.jsonl'))
+        assert len(files) == 2
+
+        # First file has 1 entry, second file has 1 entry
+        with open(files[0]) as f:
+            assert len(f.readlines()) == 1
+        with open(files[1]) as f:
+            assert len(f.readlines()) == 1
+
+    @pytest.mark.asyncio
+    async def test_rotate_noop_when_no_file_open(self, wal_dir):
+        """rotate() is a no-op when no file is open."""
+        writer = WalWriter(wal_dir)
+        initial_file_seq = writer._file_seq
+
+        # Rotate with no open file — should not raise or change state
+        await writer.rotate()
+        assert writer._file_seq == initial_file_seq
+        assert writer._file is None
+
+        await writer.close()
 
 
 class TestWalWriterConcurrency:

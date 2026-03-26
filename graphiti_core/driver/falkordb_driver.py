@@ -308,6 +308,14 @@ class FalkorDriver(GraphDriver):
         if self._wal is not None and self._wal_owner:
             await self._wal.close()
 
+    async def rotate_wal(self) -> None:
+        """Rotate the WAL file, closing the current tip file.
+
+        No-op if WAL is disabled or no file is currently open.
+        """
+        if self._wal is not None:
+            await self._wal.rotate()
+
         if hasattr(self.client, 'aclose'):
             await self.client.aclose()  # type: ignore[reportUnknownMemberType]
         elif hasattr(self.client.connection, 'aclose'):
