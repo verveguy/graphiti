@@ -294,9 +294,13 @@ class LadybugDriver(GraphDriver):
         pass
 
     async def build_indices_and_constraints(self, delete_existing: bool = False):
-        # Schema and indices are created during setup_schema()
-        # This method is required by the abstract base class but is a no-op.
-        pass
+        # Load FTS extension on the async connection — setup_schema() loaded it
+        # on the sync connection, but extensions are per-connection in LadybugDB.
+        try:
+            await self.client.execute('LOAD EXTENSION FTS;')
+            logger.info('FTS extension loaded on async connection')
+        except Exception as e:
+            logger.warning(f'Could not load FTS extension on async connection: {e}')
 
     def setup_schema(self):
         conn = kuzu.Connection(self.db)
