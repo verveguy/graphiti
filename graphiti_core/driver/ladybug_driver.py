@@ -302,6 +302,20 @@ class LadybugDriver(GraphDriver):
         except Exception as e:
             logger.warning(f'Could not load FTS extension on async connection: {e}')
 
+        # Create FTS indexes — the original KuzuDriver was a no-op here,
+        # but graphiti's dedup pipeline needs fulltext search to work.
+        from graphiti_core.graph_queries import get_fulltext_indices
+
+        for query in get_fulltext_indices(GraphProvider.KUZU):
+            try:
+                await self.client.execute(query)
+                logger.info(f'Created FTS index: {query[:80]}')
+            except Exception as e:
+                if 'already exists' in str(e).lower():
+                    logger.debug(f'FTS index already exists: {query[:80]}')
+                else:
+                    logger.error(f'Failed to create FTS index: {e}\n{query}')
+
     def setup_schema(self):
         conn = kuzu.Connection(self.db)
         # Load FTS extension before creating schema — required for
