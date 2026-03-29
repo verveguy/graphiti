@@ -246,10 +246,10 @@ class LadybugDriver(GraphDriver):
         params.pop('database_', None)
         params.pop('routing_', None)
 
-        # Trace all queries for debugging
-        is_write = any(kw in cypher_query_.upper() for kw in ('MERGE', 'CREATE', 'SET', 'DELETE'))
-        if is_write:
-            logger.info(f'LadybugDB WRITE: {cypher_query_[:120].strip()}...')
+        if logger.isEnabledFor(logging.DEBUG):
+            is_write = any(kw in cypher_query_.upper() for kw in ('MERGE', 'CREATE', 'SET', 'DELETE'))
+            if is_write:
+                logger.debug('LadybugDB WRITE query executed')
 
         try:
             results = await self.client.execute(cypher_query_, parameters=params)
@@ -258,16 +258,15 @@ class LadybugDriver(GraphDriver):
             logger.error(f'Error executing LadybugDB query: {e}\n{cypher_query_}\n{params}')
             raise
 
-        if not results:
-            if is_write:
-                logger.warning(f'LadybugDB WRITE returned no results (still committed): {cypher_query_[:80].strip()}')
-            return [], None, None
-
-        # Log mutation to WAL after successful execution
+        # Log mutation to WAL after successful execution, before checking results.
+        # This ensures DELETE/DETACH DELETE queries (which return no rows) are logged.
         if self._wal is not None:
             await self._wal.log_mutation(
                 cypher_query_, cast(dict[str, Any], params), database=''
             )
+
+        if not results:
+            return [], None, None
 
         if isinstance(results, list):
             dict_results = [
@@ -279,7 +278,7 @@ class LadybugDriver(GraphDriver):
         return dict_results, None, None  # type: ignore
 
     def session(self, _database: str | None = None) -> GraphDriverSession:
-        return LadybugDriverSession(self, wal=self._wal)
+        return LadybugDriverSession(self)
 
     async def close(self):
         if self._wal is not None and self._wal_owner:
@@ -290,7 +289,8 @@ class LadybugDriver(GraphDriver):
         if self._wal is not None:
             await self._wal.rotate()
 
-    def delete_all_indexes(self, database_: str):
+    async def delete_all_indexes(self) -> None:
+        """No-op for LadybugDB; required to satisfy GraphDriver interface."""
         pass
 
     async def build_indices_and_constraints(self, delete_existing: bool = False):
@@ -327,8 +327,8 @@ class LadybugDriver(GraphDriver):
             logger.debug(f'FTS extension setup: {e}')
             try:
                 conn.execute('LOAD EXTENSION FTS;')
-            except Exception:
-                logger.warning('Could not load FTS extension — fulltext search will be unavailable')
+            except Exception as e_load:
+                logger.warning(f'Could not load FTS extension — fulltext search will be unavailable: {e_load}')
         conn.execute(SCHEMA_QUERIES)
         conn.close()
 
@@ -336,9 +336,8 @@ class LadybugDriver(GraphDriver):
 class LadybugDriverSession(GraphDriverSession):
     provider = GraphProvider.KUZU
 
-    def __init__(self, driver: LadybugDriver, wal: WalWriter | None = None):
+    def __init__(self, driver: LadybugDriver):
         self.driver = driver
-        self._wal = wal
 
     async def __aenter__(self):
         return self
@@ -353,20 +352,12 @@ class LadybugDriverSession(GraphDriverSession):
         return await func(self, *args, **kwargs)
 
     async def run(self, query: str | list, **kwargs: Any) -> Any:
+        # WAL logging is handled by driver.execute_query() — no duplicate logging here.
         if isinstance(query, list):
-            logger.info(f'LadybugSession.run: batch of {len(query)} queries')
             for cypher, params in query:
                 await self.driver.execute_query(cypher, **params)
-                if self._wal is not None:
-                    await self._wal.log_mutation(
-                        str(cypher), cast(dict[str, Any], params), database=''
-                    )
         else:
             await self.driver.execute_query(query, **kwargs)
-            if self._wal is not None:
-                await self._wal.log_mutation(
-                    str(query), cast(dict[str, Any], dict(kwargs)), database=''
-                )
         return None
 
 
@@ -441,7 +432,8 @@ async def replay_wal_ladybug(
                         continue
 
                     try:
-                        assert driver is not None
+                        if driver is None:
+                            raise RuntimeError('LadybugDriver is not initialized for WAL replay')
                         await driver.execute_query(cypher, **params)
                         replayed += 1
                     except Exception as e:
