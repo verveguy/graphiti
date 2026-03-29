@@ -246,6 +246,11 @@ class LadybugDriver(GraphDriver):
         params.pop('database_', None)
         params.pop('routing_', None)
 
+        # Trace all queries for debugging
+        is_write = any(kw in cypher_query_.upper() for kw in ('MERGE', 'CREATE', 'SET', 'DELETE'))
+        if is_write:
+            logger.info(f'LadybugDB WRITE: {cypher_query_[:120].strip()}...')
+
         try:
             results = await self.client.execute(cypher_query_, parameters=params)
         except Exception as e:
@@ -254,6 +259,8 @@ class LadybugDriver(GraphDriver):
             raise
 
         if not results:
+            if is_write:
+                logger.warning(f'LadybugDB WRITE returned no results (still committed): {cypher_query_[:80].strip()}')
             return [], None, None
 
         # Log mutation to WAL after successful execution
@@ -329,6 +336,7 @@ class LadybugDriverSession(GraphDriverSession):
 
     async def run(self, query: str | list, **kwargs: Any) -> Any:
         if isinstance(query, list):
+            logger.info(f'LadybugSession.run: batch of {len(query)} queries')
             for cypher, params in query:
                 await self.driver.execute_query(cypher, **params)
                 if self._wal is not None:
