@@ -293,6 +293,17 @@ class LadybugDriver(GraphDriver):
 
     def setup_schema(self):
         conn = kuzu.Connection(self.db)
+        # Load FTS extension before creating schema — required for
+        # fulltext index creation in build_indices_and_constraints().
+        try:
+            conn.execute('INSTALL FTS; LOAD EXTENSION FTS;')
+        except Exception as e:
+            # FTS may already be installed/loaded
+            logger.debug(f'FTS extension setup: {e}')
+            try:
+                conn.execute('LOAD EXTENSION FTS;')
+            except Exception:
+                logger.warning('Could not load FTS extension — fulltext search will be unavailable')
         conn.execute(SCHEMA_QUERIES)
         conn.close()
 
