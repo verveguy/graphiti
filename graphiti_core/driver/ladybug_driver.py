@@ -161,6 +161,7 @@ class LadybugDriver(GraphDriver):
         wal_writer: WalWriter | None = None,
     ):
         super().__init__()
+        self._database = ''  # Kuzu/LadybugDB is single-database; needed by graphiti.py
         self.db = kuzu.Database(db)
 
         self.setup_schema()
