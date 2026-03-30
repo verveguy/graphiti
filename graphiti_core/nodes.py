@@ -315,6 +315,10 @@ class EpisodicNode(Node):
         description='list of entity edges referenced in this episode',
         default_factory=list,
     )
+    content_embedding: list[float] | None = Field(
+        description='vector embedding of episode content',
+        default=None,
+    )
 
     async def save(self, driver: GraphDriver):
         if driver.graph_operations_interface:
@@ -329,6 +333,7 @@ class EpisodicNode(Node):
             'group_id': self.group_id,
             'source_description': self.source_description,
             'content': self.content,
+            'content_embedding': self.content_embedding,
             'entity_edges': self.entity_edges,
             'created_at': self.created_at,
             'valid_at': self.valid_at,
@@ -1006,6 +1011,7 @@ def get_episodic_node_from_record(record: Any) -> EpisodicNode:
         name=record['name'],
         source_description=record['source_description'],
         entity_edges=record['entity_edges'],
+        content_embedding=record.get('content_embedding'),
     )
 
 

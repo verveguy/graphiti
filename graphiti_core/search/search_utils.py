@@ -2609,3 +2609,148 @@ async def get_embeddings_for_edges(
             embeddings_dict[uuid] = embedding
 
     return embeddings_dict
+
+
+async def episode_similarity_search(
+    driver: GraphDriver,
+    search_vector: list[float],
+    group_ids: list[str] | None,
+    limit: int = 10,
+    min_score: float = DEFAULT_MIN_SCORE,
+) -> list[tuple[EpisodicNode, float]]:
+    """Search Episodic nodes by content_embedding similarity.
+
+    Returns a list of (EpisodicNode, score) tuples ordered by descending similarity.
+    Uses HNSW vector index for Kuzu/LadybugDB, with brute-force fallback.
+    """
+    from graphiti_core.models.nodes.node_db_queries import EPISODIC_NODE_RETURN
+
+    filter_queries: list[str] = []
+    filter_params: dict[str, Any] = {}
+
+    if group_ids:
+        filter_queries.append('e.group_id IN $group_ids')
+        filter_params['group_ids'] = group_ids
+
+    records: list[Any] = []
+
+    if driver.provider == GraphProvider.KUZU:
+        try:
+            over_fetch_limit = limit * 10
+            dim = len(search_vector)
+
+            post_filter_parts = list(filter_queries)
+            post_filter_parts.append('score > $min_score')
+            post_filter = ' WHERE ' + ' AND '.join(post_filter_parts)
+
+            query = (
+                f"CALL QUERY_VECTOR_INDEX('Episodic', 'episodic_content_embedding_idx', "
+                f'CAST($search_vector AS FLOAT[{dim}]), $over_fetch_limit)'
+                """
+                WITH node AS e, (1.0 - distance) AS score
+                """
+                + post_filter
+                + """
+                RETURN
+                """
+                + EPISODIC_NODE_RETURN
+                + """,
+                score
+                ORDER BY score DESC
+                LIMIT $limit
+                """
+            )
+
+            records, _, _ = await driver.execute_query(
+                query,
+                search_vector=search_vector,
+                over_fetch_limit=over_fetch_limit,
+                limit=limit,
+                min_score=min_score,
+                routing_='r',
+                **filter_params,
+            )
+            logger.debug(
+                'HNSW_EPISODE_SEARCH: returned %d results via vector index',
+                len(records) if records else 0,
+            )
+        except Exception as e:
+            logger.warning(
+                'HNSW_EPISODE_SEARCH: vector index query failed, falling back to brute-force: %s', e
+            )
+            search_vector_var = 'CAST($search_vector AS FLOAT[' + str(len(search_vector)) + '])'
+            filter_query = (' WHERE ' + ' AND '.join(filter_queries)) if filter_queries else ''
+
+            query = (
+                """
+                MATCH (e:Episodic)
+                """
+                + filter_query
+                + """
+                WITH e, """
+                + get_vector_cosine_func_query(
+                    'e.content_embedding', search_vector_var, driver.provider
+                )
+                + """ AS score
+                WHERE score > $min_score
+                RETURN
+                """
+                + EPISODIC_NODE_RETURN
+                + """,
+                score
+                ORDER BY score DESC
+                LIMIT $limit
+                """
+            )
+
+            records, _, _ = await driver.execute_query(
+                query,
+                search_vector=search_vector,
+                limit=limit,
+                min_score=min_score,
+                routing_='r',
+                **filter_params,
+            )
+    else:
+        # Brute-force for non-Kuzu providers
+        filter_query = (' WHERE ' + ' AND '.join(filter_queries)) if filter_queries else ''
+        search_vector_var = '$search_vector'
+
+        query = (
+            """
+            MATCH (e:Episodic)
+            """
+            + filter_query
+            + """
+            WITH e, """
+            + get_vector_cosine_func_query(
+                'e.content_embedding', search_vector_var, driver.provider
+            )
+            + """ AS score
+            WHERE score > $min_score
+            RETURN
+            """
+            + EPISODIC_NODE_RETURN
+            + """,
+            score
+            ORDER BY score DESC
+            LIMIT $limit
+            """
+        )
+
+        records, _, _ = await driver.execute_query(
+            query,
+            search_vector=search_vector,
+            limit=limit,
+            min_score=min_score,
+            routing_='r',
+            **filter_params,
+        )
+
+    results: list[tuple[EpisodicNode, float]] = []
+    for record in records:
+        node = get_episodic_node_from_record(record)
+        score = record.get('score', 0.0)
+        results.append((node, score))
+
+    return results
