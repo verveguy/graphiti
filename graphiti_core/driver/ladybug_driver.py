@@ -303,9 +303,16 @@ class LadybugDriver(GraphDriver):
         except Exception as e:
             logger.warning(f'Could not load FTS extension on async connection: {e}')
 
+        # Load vector extension on async connection (same dual-load pattern as FTS).
+        try:
+            await self.client.execute('LOAD EXTENSION vector;')
+            logger.info('vector extension loaded on async connection')
+        except Exception as e:
+            logger.warning(f'Could not load vector extension on async connection: {e}')
+
         # Create FTS indexes — the original KuzuDriver was a no-op here,
         # but graphiti's dedup pipeline needs fulltext search to work.
-        from graphiti_core.graph_queries import get_fulltext_indices
+        from graphiti_core.graph_queries import get_fulltext_indices, get_vector_indices
 
         for query in get_fulltext_indices(GraphProvider.KUZU):
             try:
@@ -316,6 +323,17 @@ class LadybugDriver(GraphDriver):
                     logger.debug(f'FTS index already exists: {query[:80]}')
                 else:
                     logger.error(f'Failed to create FTS index: {e}\n{query}')
+
+        # Create HNSW vector indexes for similarity search.
+        for query in get_vector_indices(GraphProvider.KUZU):
+            try:
+                await self.client.execute(query)
+                logger.info(f'Created vector index: {query[:80]}')
+            except Exception as e:
+                if 'already exists' in str(e).lower():
+                    logger.debug(f'Vector index already exists: {query[:80]}')
+                else:
+                    logger.error(f'Failed to create vector index: {e}\n{query}')
 
     def setup_schema(self):
         conn = kuzu.Connection(self.db)
@@ -330,6 +348,17 @@ class LadybugDriver(GraphDriver):
                 conn.execute('LOAD EXTENSION FTS;')
             except Exception as e_load:
                 logger.warning(f'Could not load FTS extension — fulltext search will be unavailable: {e_load}')
+        # Load vector extension for HNSW index support (same pattern as FTS above).
+        try:
+            conn.execute('INSTALL vector; LOAD EXTENSION vector;')
+            logger.info('vector extension loaded on sync connection')
+        except Exception as e:
+            logger.debug(f'vector extension setup: {e}')
+            try:
+                conn.execute('LOAD EXTENSION vector;')
+                logger.info('vector extension loaded on sync connection')
+            except Exception as e_load:
+                logger.warning(f'Could not load vector extension — HNSW indexes will be unavailable: {e_load}')
         conn.execute(SCHEMA_QUERIES)
         conn.close()
 
