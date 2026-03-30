@@ -738,6 +738,79 @@ async def edge_similarity_search(
                 'BRUTEFORCE_EDGE_SEARCH (cached): returning top %d',
                 len(records),
             )
+    elif driver.provider == GraphProvider.KUZU:
+        # Try HNSW vector index search first, fall back to brute-force on error.
+        try:
+            over_fetch_limit = limit * 10
+            dim = len(search_vector)
+
+            post_filter_parts = list(filter_queries)  # includes group_ids, source/target if set
+            post_filter_parts.append('score > $min_score')
+            post_filter = ' WHERE ' + ' AND '.join(post_filter_parts)
+
+            query = (
+                f"CALL QUERY_VECTOR_INDEX('RelatesToNode_', 'edge_fact_embedding_idx', "
+                f'CAST($search_vector AS FLOAT[{dim}]), $over_fetch_limit)'
+                """
+                WITH node AS e, (1.0 - distance) AS score
+                MATCH (n:Entity)-[:RELATES_TO]->(e)-[:RELATES_TO]->(m:Entity)
+                """
+                + post_filter
+                + """
+                RETURN
+                """
+                + get_entity_edge_return_query(driver.provider)
+                + """
+                ORDER BY score DESC
+                LIMIT $limit
+                """
+            )
+
+            records, _, _ = await driver.execute_query(
+                query,
+                search_vector=search_vector,
+                over_fetch_limit=over_fetch_limit,
+                limit=limit,
+                min_score=min_score,
+                routing_='r',
+                **filter_params,
+            )
+            logger.debug(
+                'HNSW_EDGE_SEARCH: returned %d results via vector index',
+                len(records) if records else 0,
+            )
+        except Exception as e_exc:
+            logger.warning(
+                'HNSW_EDGE_SEARCH: vector index query failed, falling back to brute-force: %s',
+                e_exc,
+            )
+            query = (
+                match_query
+                + filter_query
+                + """
+                WITH DISTINCT e, n, m, """
+                + get_vector_cosine_func_query(
+                    'e.fact_embedding', search_vector_var, driver.provider
+                )
+                + """ AS score
+                WHERE score > $min_score
+                RETURN
+                """
+                + get_entity_edge_return_query(driver.provider)
+                + """
+                ORDER BY score DESC
+                LIMIT $limit
+                """
+            )
+
+            records, _, _ = await driver.execute_query(
+                query,
+                search_vector=search_vector,
+                limit=limit,
+                min_score=min_score,
+                routing_='r',
+                **filter_params,
+            )
     else:
         query = (
             match_query
