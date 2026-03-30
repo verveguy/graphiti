@@ -1114,12 +1114,84 @@ async def node_similarity_search(
             len(records),
             [r['name'] for r in records[:5]] if records else '[]',
         )
+    elif driver.provider == GraphProvider.KUZU:
+        # Try HNSW vector index search first, fall back to brute-force on error.
+        try:
+            over_fetch_limit = limit * 10
+            dim = len(search_vector)
+
+            post_filter_parts = list(filter_queries)  # includes group_ids if set
+            post_filter_parts.append('score > $min_score')
+            post_filter = ' WHERE ' + ' AND '.join(post_filter_parts)
+
+            query = (
+                f"CALL QUERY_VECTOR_INDEX('Entity', 'entity_name_embedding_idx', "
+                f'CAST($search_vector AS FLOAT[{dim}]), $over_fetch_limit)'
+                """
+                WITH node AS n, (1.0 - distance) AS score
+                """
+                + post_filter
+                + """
+                RETURN
+                """
+                + get_entity_node_return_query(driver.provider)
+                + """
+                ORDER BY score DESC
+                LIMIT $limit
+                """
+            )
+
+            records, _, _ = await driver.execute_query(
+                query,
+                search_vector=search_vector,
+                over_fetch_limit=over_fetch_limit,
+                limit=limit,
+                min_score=min_score,
+                routing_='r',
+                **filter_params,
+            )
+            logger.debug(
+                'HNSW_NODE_SEARCH: returned %d results via vector index',
+                len(records) if records else 0,
+            )
+        except Exception as e:
+            logger.warning(
+                'HNSW_NODE_SEARCH: vector index query failed, falling back to brute-force: %s', e
+            )
+            query = (
+                """
+                MATCH (n:Entity)
+                """
+                + filter_query
+                + """
+                WITH n, """
+                + get_vector_cosine_func_query(
+                    'n.name_embedding', search_vector_var, driver.provider
+                )
+                + """ AS score
+                WHERE score > $min_score
+                RETURN
+                """
+                + get_entity_node_return_query(driver.provider)
+                + """
+                ORDER BY score DESC
+                LIMIT $limit
+                """
+            )
+
+            records, _, _ = await driver.execute_query(
+                query,
+                search_vector=search_vector,
+                limit=limit,
+                min_score=min_score,
+                routing_='r',
+                **filter_params,
+            )
     else:
-        logger.debug('BRUTEFORCE_NODE_SEARCH: provider=%s (NOT using HNSW)', driver.provider)
         query = (
             """
-                                                                                                                                    MATCH (n:Entity)
-                                                                                                                                    """
+            MATCH (n:Entity)
+            """
             + filter_query
             + """
             WITH n, """
