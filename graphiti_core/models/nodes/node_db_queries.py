@@ -38,6 +38,7 @@ def get_episode_node_save_query(provider: GraphProvider) -> str:
                     n.source = $source,
                     n.source_description = $source_description,
                     n.content = $content,
+                    n.content_embedding = $content_embedding,
                     n.valid_at = $valid_at,
                     n.entity_edges = $entity_edges
                 RETURN n.uuid AS uuid
@@ -79,6 +80,7 @@ def get_episode_node_save_bulk_query(provider: GraphProvider) -> str:
                     n.source = $source,
                     n.source_description = $source_description,
                     n.content = $content,
+                    n.content_embedding = $content_embedding,
                     n.valid_at = $valid_at,
                     n.entity_edges = $entity_edges
                 RETURN n.uuid AS uuid
@@ -109,6 +111,7 @@ EPISODIC_NODE_RETURN = """
     e.source AS source,
     e.source_description AS source_description,
     e.content AS content,
+    e.content_embedding AS content_embedding,
     e.valid_at AS valid_at,
     e.entity_edges AS entity_edges
 """
