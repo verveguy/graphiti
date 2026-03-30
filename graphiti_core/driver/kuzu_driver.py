@@ -20,6 +20,7 @@ from typing import Any
 import kuzu
 
 from graphiti_core.driver.driver import GraphDriver, GraphDriverSession, GraphProvider
+from graphiti_core.embedder.client import EMBEDDING_DIM
 from graphiti_core.driver.kuzu.operations.community_edge_ops import KuzuCommunityEdgeOperations
 from graphiti_core.driver.kuzu.operations.community_node_ops import KuzuCommunityNodeOperations
 from graphiti_core.driver.kuzu.operations.entity_edge_ops import KuzuEntityEdgeOperations
@@ -51,7 +52,7 @@ logger = logging.getLogger(__name__)
 # As Kuzu currently does not support creating full text indexes on edge properties,
 # we work around this by representing (n:Entity)-[:RELATES_TO]->(m:Entity) as
 # (n)-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m).
-SCHEMA_QUERIES = """
+SCHEMA_QUERIES = f"""
     CREATE NODE TABLE IF NOT EXISTS Episodic (
         uuid STRING PRIMARY KEY,
         name STRING,
@@ -69,7 +70,7 @@ SCHEMA_QUERIES = """
         group_id STRING,
         labels STRING[],
         created_at TIMESTAMP,
-        name_embedding FLOAT[],
+        name_embedding FLOAT[{EMBEDDING_DIM}],
         summary STRING,
         attributes STRING
     );
@@ -78,7 +79,7 @@ SCHEMA_QUERIES = """
         name STRING,
         group_id STRING,
         created_at TIMESTAMP,
-        name_embedding FLOAT[],
+        name_embedding FLOAT[{EMBEDDING_DIM}],
         summary STRING
     );
     CREATE NODE TABLE IF NOT EXISTS RelatesToNode_ (
@@ -87,7 +88,7 @@ SCHEMA_QUERIES = """
         created_at TIMESTAMP,
         name STRING,
         fact STRING,
-        fact_embedding FLOAT[],
+        fact_embedding FLOAT[{EMBEDDING_DIM}],
         episodes STRING[],
         expired_at TIMESTAMP,
         valid_at TIMESTAMP,
