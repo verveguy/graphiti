@@ -165,4 +165,4 @@ cython_debug/
 cache.db*
 
 # All DS_Store files
-.DS_Store
+.DS_Store.fabrik-context/
