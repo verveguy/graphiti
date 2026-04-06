@@ -372,7 +372,8 @@ class FalkorDriver(GraphDriver):
         """
         Returns a shallow copy of this driver with a different default database.
         Reuses the same connection (e.g. FalkorDB, Neo4j).
-        Cloned drivers share the same WAL writer instance (reference counted).
+        Cloned drivers share the WAL writer instance but do not own it — only
+        the creating driver closes the WAL on shutdown.
         """
         if database == self._database:
             cloned = self
