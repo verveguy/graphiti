@@ -6,7 +6,12 @@ import pytest
 
 from graphiti_core.driver.driver import GraphProvider
 from graphiti_core.search.search_filters import SearchFilters
-from graphiti_core.search.search_utils import node_similarity_search
+from graphiti_core.search.search_utils import (
+    community_similarity_search,
+    edge_similarity_search,
+    episode_similarity_search,
+    node_similarity_search,
+)
 
 
 def _make_kuzu_driver():
@@ -179,3 +184,233 @@ class TestKuzuNodeSimilaritySearch:
         )
 
         assert results == []
+
+
+class TestKuzuEdgeSimilaritySearch:
+    """Tests for Kuzu HNSW branch in edge_similarity_search."""
+
+    @pytest.mark.asyncio
+    async def test_uses_hnsw_vector_index_query(self):
+        """Test that Kuzu branch uses QUERY_VECTOR_INDEX for RelatesToNode_."""
+        driver = _make_kuzu_driver()
+        driver.execute_query.return_value = ([], [], None)
+
+        search_vector = [0.1] * 768
+        await edge_similarity_search(
+            driver,
+            search_vector,
+            source_node_uuid=None,
+            target_node_uuid=None,
+            search_filter=SearchFilters(),
+            group_ids=['group-1'],
+        )
+
+        driver.execute_query.assert_called_once()
+        query = driver.execute_query.call_args[0][0]
+        assert 'QUERY_VECTOR_INDEX' in query
+        assert "'RelatesToNode_'" in query
+        assert 'edge_fact_embedding_idx' in query
+
+    @pytest.mark.asyncio
+    async def test_converts_distance_to_similarity(self):
+        driver = _make_kuzu_driver()
+        driver.execute_query.return_value = ([], [], None)
+
+        await edge_similarity_search(
+            driver,
+            [0.1] * 768,
+            source_node_uuid=None,
+            target_node_uuid=None,
+            search_filter=SearchFilters(),
+        )
+
+        query = driver.execute_query.call_args[0][0]
+        assert '1.0 - distance' in query
+
+    @pytest.mark.asyncio
+    async def test_casts_search_vector_with_dimension(self):
+        driver = _make_kuzu_driver()
+        driver.execute_query.return_value = ([], [], None)
+
+        await edge_similarity_search(
+            driver,
+            [0.1] * 768,
+            source_node_uuid=None,
+            target_node_uuid=None,
+            search_filter=SearchFilters(),
+        )
+
+        query = driver.execute_query.call_args[0][0]
+        assert 'FLOAT[768]' in query
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_brute_force_on_error(self):
+        driver = _make_kuzu_driver()
+        driver.execute_query.side_effect = [
+            RuntimeError('index not found'),
+            ([], [], None),
+        ]
+
+        await edge_similarity_search(
+            driver,
+            [0.1] * 768,
+            source_node_uuid=None,
+            target_node_uuid=None,
+            search_filter=SearchFilters(),
+            group_ids=['group-1'],
+        )
+
+        assert driver.execute_query.call_count == 2
+        fallback_query = driver.execute_query.call_args_list[1][0][0]
+        assert 'array_cosine_similarity' in fallback_query
+
+
+class TestKuzuCommunitySimilaritySearch:
+    """Tests for Kuzu HNSW branch in community_similarity_search."""
+
+    @pytest.mark.asyncio
+    async def test_uses_hnsw_vector_index_query(self):
+        """Test that Kuzu branch uses QUERY_VECTOR_INDEX for Community."""
+        driver = _make_kuzu_driver()
+        driver.execute_query.return_value = ([], [], None)
+
+        search_vector = [0.1] * 768
+        await community_similarity_search(
+            driver,
+            search_vector,
+            group_ids=['group-1'],
+        )
+
+        driver.execute_query.assert_called_once()
+        query = driver.execute_query.call_args[0][0]
+        assert 'QUERY_VECTOR_INDEX' in query
+        assert "'Community'" in query
+        assert 'community_name_embedding_idx' in query
+
+    @pytest.mark.asyncio
+    async def test_converts_distance_to_similarity(self):
+        driver = _make_kuzu_driver()
+        driver.execute_query.return_value = ([], [], None)
+
+        await community_similarity_search(driver, [0.1] * 768)
+
+        query = driver.execute_query.call_args[0][0]
+        assert '1.0 - distance' in query
+
+    @pytest.mark.asyncio
+    async def test_casts_search_vector_with_dimension(self):
+        driver = _make_kuzu_driver()
+        driver.execute_query.return_value = ([], [], None)
+
+        await community_similarity_search(driver, [0.1] * 768)
+
+        query = driver.execute_query.call_args[0][0]
+        assert 'FLOAT[768]' in query
+
+    @pytest.mark.asyncio
+    async def test_applies_group_id_filter(self):
+        driver = _make_kuzu_driver()
+        driver.execute_query.return_value = ([], [], None)
+
+        await community_similarity_search(
+            driver,
+            [0.1] * 768,
+            group_ids=['group-1'],
+        )
+
+        query = driver.execute_query.call_args[0][0]
+        assert 'group_id' in query
+
+    @pytest.mark.asyncio
+    async def test_over_fetches_for_post_filtering(self):
+        driver = _make_kuzu_driver()
+        driver.execute_query.return_value = ([], [], None)
+
+        await community_similarity_search(
+            driver,
+            [0.1] * 768,
+            limit=5,
+        )
+
+        call_kwargs = driver.execute_query.call_args[1]
+        assert call_kwargs['over_fetch_limit'] == 50
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_brute_force_on_error(self):
+        driver = _make_kuzu_driver()
+        driver.execute_query.side_effect = [
+            RuntimeError('index not found'),
+            ([], [], None),
+        ]
+
+        await community_similarity_search(
+            driver,
+            [0.1] * 768,
+            group_ids=['group-1'],
+        )
+
+        assert driver.execute_query.call_count == 2
+        fallback_query = driver.execute_query.call_args_list[1][0][0]
+        assert 'MATCH (c:Community)' in fallback_query
+        assert 'array_cosine_similarity' in fallback_query
+
+
+class TestKuzuEpisodeSimilaritySearch:
+    """Tests for Kuzu HNSW branch in episode_similarity_search."""
+
+    @pytest.mark.asyncio
+    async def test_uses_hnsw_vector_index_query(self):
+        """Test that Kuzu branch uses QUERY_VECTOR_INDEX for Episodic."""
+        driver = _make_kuzu_driver()
+        driver.execute_query.return_value = ([], [], None)
+
+        await episode_similarity_search(
+            driver,
+            [0.1] * 768,
+            group_ids=['group-1'],
+        )
+
+        driver.execute_query.assert_called_once()
+        query = driver.execute_query.call_args[0][0]
+        assert 'QUERY_VECTOR_INDEX' in query
+        assert "'Episodic'" in query
+        assert 'episodic_content_embedding_idx' in query
+
+    @pytest.mark.asyncio
+    async def test_converts_distance_to_similarity(self):
+        driver = _make_kuzu_driver()
+        driver.execute_query.return_value = ([], [], None)
+
+        await episode_similarity_search(driver, [0.1] * 768, group_ids=None)
+
+        query = driver.execute_query.call_args[0][0]
+        assert '1.0 - distance' in query
+
+    @pytest.mark.asyncio
+    async def test_casts_search_vector_with_dimension(self):
+        driver = _make_kuzu_driver()
+        driver.execute_query.return_value = ([], [], None)
+
+        await episode_similarity_search(driver, [0.1] * 768, group_ids=None)
+
+        query = driver.execute_query.call_args[0][0]
+        assert 'FLOAT[768]' in query
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_brute_force_on_error(self):
+        driver = _make_kuzu_driver()
+        driver.execute_query.side_effect = [
+            RuntimeError('index not found'),
+            ([], [], None),
+        ]
+
+        await episode_similarity_search(
+            driver,
+            [0.1] * 768,
+            group_ids=['group-1'],
+        )
+
+        assert driver.execute_query.call_count == 2
+        fallback_query = driver.execute_query.call_args_list[1][0][0]
+        assert 'MATCH (e:Episodic)' in fallback_query
+        assert 'array_cosine_similarity' in fallback_query
