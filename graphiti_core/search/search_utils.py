@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import asyncio
 import logging
 from collections import defaultdict
-import asyncio
 from time import time
 from typing import Any
 
@@ -84,7 +84,7 @@ class _EmbeddingCache:
     def __init__(self) -> None:
         self.records: list[dict] | None = None
         self.matrix: np.ndarray | None = None  # (N, D) float32
-        self.norms: np.ndarray | None = None   # (N,) float32
+        self.norms: np.ndarray | None = None  # (N,) float32
         self._idx_map: list[int] | None = None  # indices of non-null embeddings
         self._lock: asyncio.Lock | None = None
 
@@ -117,7 +117,12 @@ class _EmbeddingCache:
 
     def search(self, query_vec: list[float], min_score: float, limit: int) -> list[dict]:
         """Return top-k records above min_score by cosine similarity."""
-        if self.records is None or self.matrix is None or self.norms is None or self._idx_map is None:
+        if (
+            self.records is None
+            or self.matrix is None
+            or self.norms is None
+            or self._idx_map is None
+        ):
             return []
         qv = np.array(query_vec, dtype=np.float32)
         qnorm = np.linalg.norm(qv)
@@ -138,7 +143,12 @@ class _EmbeddingCache:
         do a full load).  Records without an 'emb' key are stored but not
         indexed for similarity search.
         """
-        if self.records is None or self.matrix is None or self.norms is None or self._idx_map is None:
+        if (
+            self.records is None
+            or self.matrix is None
+            or self.norms is None
+            or self._idx_map is None
+        ):
             return  # Cache not loaded — nothing to append to
         if not new_records:
             return
@@ -162,8 +172,7 @@ class _EmbeddingCache:
             self._idx_map.extend(new_idx_map)
 
         logger.debug(
-            'EMBEDDING_CACHE_APPEND: added %d records (%d with embeddings), '
-            'total now %d records',
+            'EMBEDDING_CACHE_APPEND: added %d records (%d with embeddings), total now %d records',
             len(new_records),
             len(new_embs),
             len(self.records),
@@ -242,9 +251,15 @@ def update_embedding_cache(
                     'source_node_uuid': e.source_node_uuid,
                     'target_node_uuid': e.target_node_uuid,
                     'created_at': str(getattr(e, 'created_at', '')),
-                    'expired_at': str(getattr(e, 'expired_at', '')) if getattr(e, 'expired_at', None) else None,
-                    'valid_at': str(getattr(e, 'valid_at', '')) if getattr(e, 'valid_at', None) else None,
-                    'invalid_at': str(getattr(e, 'invalid_at', '')) if getattr(e, 'invalid_at', None) else None,
+                    'expired_at': str(getattr(e, 'expired_at', ''))
+                    if getattr(e, 'expired_at', None)
+                    else None,
+                    'valid_at': str(getattr(e, 'valid_at', ''))
+                    if getattr(e, 'valid_at', None)
+                    else None,
+                    'invalid_at': str(getattr(e, 'invalid_at', ''))
+                    if getattr(e, 'invalid_at', None)
+                    else None,
                     'episodes': getattr(e, 'episodes', []),
                     'attributes': {},
                     'emb': emb,
@@ -291,10 +306,10 @@ def _vectorized_cosine_rank(
             embs.append(emb)
     if not embs:
         return []
-    mat = np.array(embs, dtype=np.float32)            # (N, D)
+    mat = np.array(embs, dtype=np.float32)  # (N, D)
     query_vec = np.array(search_vector, dtype=np.float32)  # (D,)
     # Cosine similarity = dot(a,b) / (|a| * |b|)
-    norms = np.linalg.norm(mat, axis=1)                # (N,)
+    norms = np.linalg.norm(mat, axis=1)  # (N,)
     query_norm = np.linalg.norm(query_vec)
     if query_norm == 0:
         return []
@@ -1080,7 +1095,9 @@ async def node_similarity_search(
 ) -> list[EntityNode]:
     start = time()
     if driver.search_interface:
-        logger.debug('SEARCH_INTERFACE_NODE_SEARCH: dispatching to search_interface (NOT HNSW path)')
+        logger.debug(
+            'SEARCH_INTERFACE_NODE_SEARCH: dispatching to search_interface (NOT HNSW path)'
+        )
         return await driver.search_interface.node_similarity_search(
             driver, search_vector, search_filter, group_ids, limit, min_score
         )
@@ -1683,20 +1700,94 @@ async def community_similarity_search(
             routing_='r',
             **query_params,
         )
-    else:
-        search_vector_var = '$search_vector'
-        if driver.provider == GraphProvider.KUZU:
-            search_vector_var = f'CAST($search_vector AS FLOAT[{len(search_vector)}])'
+    elif driver.provider == GraphProvider.KUZU:
+        # Try HNSW vector index search first, fall back to brute-force on error.
+        try:
+            over_fetch_limit = limit * 10
+            dim = len(search_vector)
 
+            post_filter_parts: list[str] = []
+            if group_ids is not None:
+                post_filter_parts.append('c.group_id IN $group_ids')
+            post_filter_parts.append('score > $min_score')
+            post_filter = ' WHERE ' + ' AND '.join(post_filter_parts)
+
+            query = (
+                f"CALL QUERY_VECTOR_INDEX('Community', 'community_name_embedding_idx', "
+                f'CAST($search_vector AS FLOAT[{dim}]), $over_fetch_limit)'
+                """
+                WITH node AS c, (1.0 - distance) AS score
+                """
+                + post_filter
+                + """
+                RETURN
+                """
+                + COMMUNITY_NODE_RETURN
+                + """
+                ORDER BY score DESC
+                LIMIT $limit
+                """
+            )
+
+            records, _, _ = await driver.execute_query(
+                query,
+                search_vector=search_vector,
+                over_fetch_limit=over_fetch_limit,
+                limit=limit,
+                min_score=min_score,
+                routing_='r',
+                **query_params,
+            )
+            logger.debug(
+                'HNSW_COMMUNITY_SEARCH: returned %d results via vector index',
+                len(records) if records else 0,
+            )
+        except Exception as e:
+            logger.warning(
+                'HNSW_COMMUNITY_SEARCH: vector index query failed, falling back to brute-force: %s',
+                e,
+            )
+            search_vector_var = f'CAST($search_vector AS FLOAT[{len(search_vector)}])'
+            query = (
+                """
+                MATCH (c:Community)
+                """
+                + group_filter_query
+                + """
+                WITH c,
+                """
+                + get_vector_cosine_func_query(
+                    'c.name_embedding', search_vector_var, driver.provider
+                )
+                + """ AS score
+                WHERE score > $min_score
+                RETURN
+                """
+                + COMMUNITY_NODE_RETURN
+                + """
+                ORDER BY score DESC
+                LIMIT $limit
+                """
+            )
+
+            records, _, _ = await driver.execute_query(
+                query,
+                search_vector=search_vector,
+                limit=limit,
+                min_score=min_score,
+                routing_='r',
+                **query_params,
+            )
+    else:
         query = (
             """
-                                                                                                                                    MATCH (c:Community)
-                                                                                                                                    """
+            MATCH (c:Community)
+            """
             + group_filter_query
             + """
             WITH c,
             """
-            + get_vector_cosine_func_query('c.name_embedding', search_vector_var, driver.provider)
+            + get_vector_cosine_func_query('c.name_embedding', '$search_vector', driver.provider)
             + """ AS score
             WHERE score > $min_score
             RETURN
