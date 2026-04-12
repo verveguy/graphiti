@@ -765,7 +765,7 @@ async def edge_similarity_search(
 
             query = (
                 f"CALL QUERY_VECTOR_INDEX('RelatesToNode_', 'edge_fact_embedding_idx', "
-                f'CAST($search_vector AS FLOAT[{dim}]), $over_fetch_limit)'
+                f'$search_vector, $over_fetch_limit)'
                 """
                 WITH node AS e, (1.0 - distance) AS score
                 MATCH (n:Entity)-[:RELATES_TO]->(e)-[:RELATES_TO]->(m:Entity)
@@ -1216,7 +1216,7 @@ async def node_similarity_search(
 
             query = (
                 f"CALL QUERY_VECTOR_INDEX('Entity', 'entity_name_embedding_idx', "
-                f'CAST($search_vector AS FLOAT[{dim}]), $over_fetch_limit)'
+                f'$search_vector, $over_fetch_limit)'
                 """
                 WITH node AS n, (1.0 - distance) AS score
                 """
@@ -1714,7 +1714,7 @@ async def community_similarity_search(
 
             query = (
                 f"CALL QUERY_VECTOR_INDEX('Community', 'community_name_embedding_idx', "
-                f'CAST($search_vector AS FLOAT[{dim}]), $over_fetch_limit)'
+                f'$search_vector, $over_fetch_limit)'
                 """
                 WITH node AS c, (1.0 - distance) AS score
                 """
@@ -2737,7 +2737,7 @@ async def episode_similarity_search(
 
             query = (
                 f"CALL QUERY_VECTOR_INDEX('Episodic', 'episodic_content_embedding_idx', "
-                f'CAST($search_vector AS FLOAT[{dim}]), $over_fetch_limit)'
+                f'$search_vector, $over_fetch_limit)'
                 """
                 WITH node AS e, (1.0 - distance) AS score
                 """
