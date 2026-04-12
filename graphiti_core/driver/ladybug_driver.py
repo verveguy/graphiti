@@ -396,6 +396,45 @@ class LadybugDriverSession(GraphDriverSession):
         return None
 
 
+import re
+
+# ISO-8601 pattern for detecting timestamp strings in WAL params
+_ISO_TS_RE = re.compile(
+    r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$'
+)
+
+# Known timestamp field names in the graphiti schema
+_TIMESTAMP_FIELDS = frozenset({
+    'created_at', 'valid_at', 'invalid_at', 'expired_at',
+})
+
+
+def _deserialize_wal_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Convert WAL JSON params back to Python types for LadybugDB.
+
+    WAL serializes datetime objects as ISO-8601 strings. LadybugDB (Kuzu)
+    requires native datetime objects for TIMESTAMP columns. This function
+    detects timestamp fields and converts them back.
+    """
+    converted = {}
+    for key, value in params.items():
+        if (
+            isinstance(value, str)
+            and key in _TIMESTAMP_FIELDS
+            and _ISO_TS_RE.match(value)
+        ):
+            try:
+                dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                converted[key] = dt
+                continue
+            except (ValueError, TypeError):
+                pass  # Fall through to keep as string
+        converted[key] = value
+    return converted
+
+
 async def replay_wal_ladybug(
     wal_dir: str | Path,
     db: str,
@@ -464,7 +503,7 @@ async def replay_wal_ladybug(
                         continue
 
                     cypher = strip_vecf32_wrappers(entry['cypher'])
-                    params = entry.get('params', {})
+                    params = _deserialize_wal_params(entry.get('params', {}))
 
                     if dry_run:
                         logger.debug('DRY RUN seq=%d: %s', seq, cypher[:80])
