@@ -46,11 +46,13 @@ from graphiti_core.driver.operations.has_episode_edge_ops import HasEpisodeEdgeO
 from graphiti_core.driver.operations.next_episode_edge_ops import NextEpisodeEdgeOperations
 from graphiti_core.driver.operations.saga_node_ops import SagaNodeOperations
 from graphiti_core.driver.operations.search_ops import SearchOperations
+from graphiti_core.driver.wal_replay_helpers import strip_vecf32_wrappers
+from graphiti_core.embedder.client import EMBEDDING_DIM
 
 logger = logging.getLogger(__name__)
 
 # Schema is identical to kuzu_driver.py — LadybugDB uses the same Cypher DDL.
-SCHEMA_QUERIES = """
+SCHEMA_QUERIES = f"""
     CREATE NODE TABLE IF NOT EXISTS Episodic (
         uuid STRING PRIMARY KEY,
         name STRING,
@@ -59,6 +61,7 @@ SCHEMA_QUERIES = """
         source STRING,
         source_description STRING,
         content STRING,
+        content_embedding FLOAT[{EMBEDDING_DIM}],
         valid_at TIMESTAMP,
         entity_edges STRING[]
     );
@@ -68,7 +71,7 @@ SCHEMA_QUERIES = """
         group_id STRING,
         labels STRING[],
         created_at TIMESTAMP,
-        name_embedding FLOAT[],
+        name_embedding FLOAT[{EMBEDDING_DIM}],
         summary STRING,
         attributes STRING
     );
@@ -77,7 +80,7 @@ SCHEMA_QUERIES = """
         name STRING,
         group_id STRING,
         created_at TIMESTAMP,
-        name_embedding FLOAT[],
+        name_embedding FLOAT[{EMBEDDING_DIM}],
         summary STRING
     );
     CREATE NODE TABLE IF NOT EXISTS RelatesToNode_ (
@@ -86,7 +89,7 @@ SCHEMA_QUERIES = """
         created_at TIMESTAMP,
         name STRING,
         fact STRING,
-        fact_embedding FLOAT[],
+        fact_embedding FLOAT[{EMBEDDING_DIM}],
         episodes STRING[],
         expired_at TIMESTAMP,
         valid_at TIMESTAMP,
@@ -247,7 +250,9 @@ class LadybugDriver(GraphDriver):
         params.pop('routing_', None)
 
         if logger.isEnabledFor(logging.DEBUG):
-            is_write = any(kw in cypher_query_.upper() for kw in ('MERGE', 'CREATE', 'SET', 'DELETE'))
+            is_write = any(
+                kw in cypher_query_.upper() for kw in ('MERGE', 'CREATE', 'SET', 'DELETE')
+            )
             if is_write:
                 logger.debug('LadybugDB WRITE query executed')
 
@@ -261,17 +266,14 @@ class LadybugDriver(GraphDriver):
         # Log mutation to WAL after successful execution, before checking results.
         # This ensures DELETE/DETACH DELETE queries (which return no rows) are logged.
         if self._wal is not None:
-            await self._wal.log_mutation(
-                cypher_query_, cast(dict[str, Any], params), database=''
-            )
+            await self._wal.log_mutation(cypher_query_, cast(dict[str, Any], params), database='')
 
         if not results:
             return [], None, None
 
         if isinstance(results, list):
             dict_results = [
-                [_fix_record_timestamps(row) for row in result.rows_as_dict()]
-                for result in results
+                [_fix_record_timestamps(row) for row in result.rows_as_dict()] for result in results
             ]
         else:
             dict_results = [_fix_record_timestamps(row) for row in results.rows_as_dict()]
@@ -302,9 +304,16 @@ class LadybugDriver(GraphDriver):
         except Exception as e:
             logger.warning(f'Could not load FTS extension on async connection: {e}')
 
+        # Load vector extension on async connection (same dual-load pattern as FTS).
+        try:
+            await self.client.execute('LOAD EXTENSION vector;')
+            logger.info('vector extension loaded on async connection')
+        except Exception as e:
+            logger.warning(f'Could not load vector extension on async connection: {e}')
+
         # Create FTS indexes — the original KuzuDriver was a no-op here,
         # but graphiti's dedup pipeline needs fulltext search to work.
-        from graphiti_core.graph_queries import get_fulltext_indices
+        from graphiti_core.graph_queries import get_fulltext_indices, get_vector_indices
 
         for query in get_fulltext_indices(GraphProvider.KUZU):
             try:
@@ -315,6 +324,17 @@ class LadybugDriver(GraphDriver):
                     logger.debug(f'FTS index already exists: {query[:80]}')
                 else:
                     logger.error(f'Failed to create FTS index: {e}\n{query}')
+
+        # Create HNSW vector indexes for similarity search.
+        for query in get_vector_indices(GraphProvider.KUZU):
+            try:
+                await self.client.execute(query)
+                logger.info(f'Created vector index: {query[:80]}')
+            except Exception as e:
+                if 'already exists' in str(e).lower():
+                    logger.debug(f'Vector index already exists: {query[:80]}')
+                else:
+                    logger.error(f'Failed to create vector index: {e}\n{query}')
 
     def setup_schema(self):
         conn = kuzu.Connection(self.db)
@@ -328,7 +348,22 @@ class LadybugDriver(GraphDriver):
             try:
                 conn.execute('LOAD EXTENSION FTS;')
             except Exception as e_load:
-                logger.warning(f'Could not load FTS extension — fulltext search will be unavailable: {e_load}')
+                logger.warning(
+                    f'Could not load FTS extension — fulltext search will be unavailable: {e_load}'
+                )
+        # Load vector extension for HNSW index support (same pattern as FTS above).
+        try:
+            conn.execute('INSTALL vector; LOAD EXTENSION vector;')
+            logger.info('vector extension loaded on sync connection')
+        except Exception as e:
+            logger.debug(f'vector extension setup: {e}')
+            try:
+                conn.execute('LOAD EXTENSION vector;')
+                logger.info('vector extension loaded on sync connection')
+            except Exception as e_load:
+                logger.warning(
+                    f'Could not load vector extension — HNSW indexes will be unavailable: {e_load}'
+                )
         conn.execute(SCHEMA_QUERIES)
         conn.close()
 
@@ -372,6 +407,11 @@ async def replay_wal_ladybug(
     Creates a LadybugDriver WITHOUT WAL (to avoid re-logging replayed
     mutations), reads JSONL files in filename order, and executes each
     mutation.
+
+    FalkorDB-era WAL entries (produced by wal_dump.py) wrap embedding
+    parameters in `vecf32($...)` which LadybugDB does not support; those
+    wrappers are stripped in-place before execution. Pure LadybugDB-era
+    entries are unaffected.
 
     Args:
         wal_dir: Directory containing WAL .jsonl files.
@@ -423,7 +463,7 @@ async def replay_wal_ladybug(
                         skipped += 1
                         continue
 
-                    cypher = entry['cypher']
+                    cypher = strip_vecf32_wrappers(entry['cypher'])
                     params = entry.get('params', {})
 
                     if dry_run:
@@ -446,6 +486,9 @@ async def replay_wal_ladybug(
 
     logger.info(
         'Replay complete: %d replayed, %d skipped (seq < %d), %d errors',
-        replayed, skipped, from_seq, errors,
+        replayed,
+        skipped,
+        from_seq,
+        errors,
     )
     return replayed

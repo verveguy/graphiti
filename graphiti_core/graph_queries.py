@@ -160,6 +160,19 @@ def get_vector_indices(provider: GraphProvider) -> list[LiteralString]:
             ],
         )
 
+    if provider == GraphProvider.KUZU:
+        from typing import cast
+
+        return cast(
+            list[LiteralString],
+            [
+                "CALL CREATE_VECTOR_INDEX('Entity', 'entity_name_embedding_idx', 'name_embedding', metric := 'cosine')",
+                "CALL CREATE_VECTOR_INDEX('Community', 'community_name_embedding_idx', 'name_embedding', metric := 'cosine')",
+                "CALL CREATE_VECTOR_INDEX('RelatesToNode_', 'edge_fact_embedding_idx', 'fact_embedding', metric := 'cosine')",
+                "CALL CREATE_VECTOR_INDEX('Episodic', 'episodic_content_embedding_idx', 'content_embedding', metric := 'cosine')",
+            ],
+        )
+
     return []
 
 
