@@ -2705,7 +2705,7 @@ async def get_embeddings_for_edges(
 async def episode_similarity_search(
     driver: GraphDriver,
     search_vector: list[float],
-    group_ids: list[str] | None,
+    group_ids: list[str] | None = None,
     limit: int = 10,
     min_score: float = DEFAULT_MIN_SCORE,
 ) -> list[tuple[EpisodicNode, float]]:
@@ -2714,12 +2714,13 @@ async def episode_similarity_search(
     Returns a list of (EpisodicNode, score) tuples ordered by descending similarity.
     Uses HNSW vector index for Kuzu/LadybugDB, with brute-force fallback.
     """
-    from graphiti_core.models.nodes.node_db_queries import EPISODIC_NODE_RETURN
-
     filter_queries: list[str] = []
     filter_params: dict[str, Any] = {}
 
-    if group_ids:
+    # `is not None` (matching the pattern in the other _similarity_search
+    # helpers in this file) so callers passing an explicit empty list
+    # don't silently fall back to an unscoped cross-group search.
+    if group_ids is not None:
         filter_queries.append('e.group_id IN $group_ids')
         filter_params['group_ids'] = group_ids
 
@@ -2769,7 +2770,7 @@ async def episode_similarity_search(
             logger.warning(
                 'HNSW_EPISODE_SEARCH: vector index query failed, falling back to brute-force: %s', e
             )
-            search_vector_var = 'CAST($search_vector AS FLOAT[' + str(len(search_vector)) + '])'
+            search_vector_var = f'CAST($search_vector AS FLOAT[{len(search_vector)}])'
             filter_query = (' WHERE ' + ' AND '.join(filter_queries)) if filter_queries else ''
 
             query = (
