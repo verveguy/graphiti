@@ -25,7 +25,8 @@ def get_episode_node_save_query(provider: GraphProvider) -> str:
             return """
                 MERGE (n:Episodic {uuid: $uuid})
                 SET n = {uuid: $uuid, name: $name, group_id: $group_id, source_description: $source_description, source: $source, content: $content,
-                entity_edges: join([x IN coalesce($entity_edges, []) | toString(x) ], '|'), created_at: $created_at, valid_at: $valid_at}
+                entity_edges: join([x IN coalesce($entity_edges, []) | toString(x) ], '|'), created_at: $created_at, valid_at: $valid_at,
+                content_embedding: join([x IN coalesce($content_embedding, []) | toString(x) ], ',')}
                 RETURN n.uuid AS uuid
             """
         case GraphProvider.KUZU:
@@ -48,13 +49,15 @@ def get_episode_node_save_query(provider: GraphProvider) -> str:
                 MERGE (n:Episodic {uuid: $uuid})
                 SET n = {uuid: $uuid, name: $name, group_id: $group_id, source_description: $source_description, source: $source, content: $content,
                 entity_edges: $entity_edges, created_at: $created_at, valid_at: $valid_at}
+                SET n.content_embedding = vecf32($content_embedding)
                 RETURN n.uuid AS uuid
             """
         case _:  # Neo4j
             return """
                 MERGE (n:Episodic {uuid: $uuid})
                 SET n = {uuid: $uuid, name: $name, group_id: $group_id, source_description: $source_description, source: $source, content: $content,
-                entity_edges: $entity_edges, created_at: $created_at, valid_at: $valid_at}
+                entity_edges: $entity_edges, created_at: $created_at, valid_at: $valid_at,
+                content_embedding: $content_embedding}
                 RETURN n.uuid AS uuid
             """
 
@@ -67,7 +70,8 @@ def get_episode_node_save_bulk_query(provider: GraphProvider) -> str:
                 MERGE (n:Episodic {uuid: episode.uuid})
                 SET n = {uuid: episode.uuid, name: episode.name, group_id: episode.group_id, source_description: episode.source_description,
                     source: episode.source, content: episode.content,
-                entity_edges: join([x IN coalesce(episode.entity_edges, []) | toString(x) ], '|'), created_at: episode.created_at, valid_at: episode.valid_at}
+                entity_edges: join([x IN coalesce(episode.entity_edges, []) | toString(x) ], '|'), created_at: episode.created_at, valid_at: episode.valid_at,
+                content_embedding: join([x IN coalesce(episode.content_embedding, []) | toString(x) ], ',')}
                 RETURN n.uuid AS uuid
             """
         case GraphProvider.KUZU:
@@ -89,16 +93,18 @@ def get_episode_node_save_bulk_query(provider: GraphProvider) -> str:
             return """
                 UNWIND $episodes AS episode
                 MERGE (n:Episodic {uuid: episode.uuid})
-                SET n = {uuid: episode.uuid, name: episode.name, group_id: episode.group_id, source_description: episode.source_description, source: episode.source, content: episode.content, 
+                SET n = {uuid: episode.uuid, name: episode.name, group_id: episode.group_id, source_description: episode.source_description, source: episode.source, content: episode.content,
                 entity_edges: episode.entity_edges, created_at: episode.created_at, valid_at: episode.valid_at}
+                SET n.content_embedding = vecf32(episode.content_embedding)
                 RETURN n.uuid AS uuid
             """
         case _:  # Neo4j
             return """
                 UNWIND $episodes AS episode
                 MERGE (n:Episodic {uuid: episode.uuid})
-                SET n = {uuid: episode.uuid, name: episode.name, group_id: episode.group_id, source_description: episode.source_description, source: episode.source, content: episode.content, 
-                entity_edges: episode.entity_edges, created_at: episode.created_at, valid_at: episode.valid_at}
+                SET n = {uuid: episode.uuid, name: episode.name, group_id: episode.group_id, source_description: episode.source_description, source: episode.source, content: episode.content,
+                entity_edges: episode.entity_edges, created_at: episode.created_at, valid_at: episode.valid_at,
+                content_embedding: episode.content_embedding}
                 RETURN n.uuid AS uuid
             """
 
