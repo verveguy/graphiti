@@ -46,7 +46,7 @@ from graphiti_core.driver.operations.has_episode_edge_ops import HasEpisodeEdgeO
 from graphiti_core.driver.operations.next_episode_edge_ops import NextEpisodeEdgeOperations
 from graphiti_core.driver.operations.saga_node_ops import SagaNodeOperations
 from graphiti_core.driver.operations.search_ops import SearchOperations
-from graphiti_core.driver.wal_replay_helpers import strip_vecf32_wrappers
+from graphiti_core.driver.wal_replay_helpers import expand_bulk_property_set, strip_vecf32_wrappers
 from graphiti_core.embedder.client import EMBEDDING_DIM
 
 logger = logging.getLogger(__name__)
@@ -409,18 +409,34 @@ _TIMESTAMP_FIELDS = frozenset({
 })
 
 
+def _is_timestamp_field(key: str) -> bool:
+    """Check if a param key refers to a timestamp field.
+
+    Handles both flat keys ('created_at') and prefixed keys from
+    expand_bulk_property_set ('props_created_at').
+    """
+    if key in _TIMESTAMP_FIELDS:
+        return True
+    # After bulk SET expansion, keys are prefixed: props_created_at
+    suffix = key.split('_', 1)[1] if '_' in key else ''
+    return suffix in _TIMESTAMP_FIELDS
+
+
 def _deserialize_wal_params(params: dict[str, Any]) -> dict[str, Any]:
     """Convert WAL JSON params back to Python types for LadybugDB.
 
     WAL serializes datetime objects as ISO-8601 strings. LadybugDB (Kuzu)
     requires native datetime objects for TIMESTAMP columns. This function
     detects timestamp fields and converts them back.
+
+    Handles both flat param names ('created_at') and prefixed names
+    from bulk SET expansion ('props_created_at').
     """
     converted = {}
     for key, value in params.items():
         if (
             isinstance(value, str)
-            and key in _TIMESTAMP_FIELDS
+            and _is_timestamp_field(key)
             and _ISO_TS_RE.match(value)
         ):
             try:
@@ -506,7 +522,9 @@ async def replay_wal_ladybug(
                         continue
 
                     cypher = strip_vecf32_wrappers(entry['cypher'])
-                    params = _deserialize_wal_params(entry.get('params', {}))
+                    params = entry.get('params', {})
+                    cypher, params = expand_bulk_property_set(cypher, params)
+                    params = _deserialize_wal_params(params)
 
                     if dry_run:
                         logger.debug('DRY RUN seq=%d: %s', seq, cypher[:80])
