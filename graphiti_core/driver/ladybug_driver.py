@@ -479,7 +479,10 @@ async def replay_wal_ladybug(
         if not dry_run:
             # No wal_dir — we don't want to re-log replayed mutations
             driver = LadybugDriver(db=db)
-            await driver.build_indices_and_constraints()
+            # NOTE: build_indices_and_constraints is called AFTER replay,
+            # not before. KuzuDB HNSW indexes block in-place vector column
+            # updates via MERGE...SET, so we bulk-load data first, then
+            # create indexes on the final state.
 
         for wal_file in wal_files:
             logger.info('Replaying %s...', wal_file.name)
@@ -521,6 +524,9 @@ async def replay_wal_ladybug(
 
     finally:
         if driver is not None:
+            if not dry_run and replayed > 0:
+                logger.info('Building indices and constraints on replayed data...')
+                await driver.build_indices_and_constraints()
             await driver.close()
 
     logger.info(
