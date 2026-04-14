@@ -33,6 +33,7 @@ from graphiti_core.driver.driver import (
 from graphiti_core.driver.kuzu.hnsw_safe_writes import (
     hnsw_safe_save_community_node,
     hnsw_safe_save_entity_node,
+    hnsw_safe_save_episode_node,
 )
 from graphiti_core.embedder import EmbedderClient
 from graphiti_core.errors import NodeNotFoundError
@@ -344,9 +345,13 @@ class EpisodicNode(Node):
             'source': self.source.value,
         }
 
-        result = await driver.execute_query(
-            get_episode_node_save_query(driver.provider), **episode_args
-        )
+        if driver.provider == GraphProvider.KUZU:
+            await hnsw_safe_save_episode_node(driver, None, episode_args)
+            result = None
+        else:
+            result = await driver.execute_query(
+                get_episode_node_save_query(driver.provider), **episode_args
+            )
 
         logger.debug(f'Saved Node to Graph: {self.uuid}')
 

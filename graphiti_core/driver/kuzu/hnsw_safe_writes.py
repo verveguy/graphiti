@@ -360,3 +360,159 @@ async def hnsw_safe_save_community_node(
             group_id=h['group_id'],
             created_at=h['created_at'],
         )
+
+
+# ---------------------------------------------------------------------------
+# Episodic Node
+# ---------------------------------------------------------------------------
+# Episodic.content_embedding is HNSW-indexed, so MERGE+SET fails on it.
+# Outgoing: MENTIONS->Entity, NEXT_EPISODE->Episodic
+# Incoming: NEXT_EPISODE from Episodic, HAS_EPISODE from Saga
+
+
+async def hnsw_safe_save_episode_node(
+    executor: QueryExecutor,
+    tx: TxLike,
+    params: dict[str, Any],
+) -> None:
+    uuid = params['uuid']
+
+    existing = await _query(
+        executor,
+        'MATCH (n:Episodic {uuid: $uuid}) RETURN n.uuid AS uuid',
+        uuid=uuid,
+    )
+
+    if existing:
+        mentions = await _query(
+            executor,
+            """
+            MATCH (ep:Episodic {uuid: $uuid})-[m:MENTIONS]->(n:Entity)
+            RETURN n.uuid AS entity_uuid, m.uuid AS mention_uuid,
+                   m.group_id AS group_id, m.created_at AS created_at
+            """,
+            uuid=uuid,
+        )
+
+        next_episode_outgoing = await _query(
+            executor,
+            """
+            MATCH (ep:Episodic {uuid: $uuid})-[e:NEXT_EPISODE]->(target:Episodic)
+            RETURN target.uuid AS target_uuid, e.uuid AS edge_uuid,
+                   e.group_id AS group_id, e.created_at AS created_at
+            """,
+            uuid=uuid,
+        )
+
+        next_episode_incoming = await _query(
+            executor,
+            """
+            MATCH (source:Episodic)-[e:NEXT_EPISODE]->(ep:Episodic {uuid: $uuid})
+            WHERE source.uuid <> $uuid
+            RETURN source.uuid AS source_uuid, e.uuid AS edge_uuid,
+                   e.group_id AS group_id, e.created_at AS created_at
+            """,
+            uuid=uuid,
+        )
+
+        has_episode = await _query(
+            executor,
+            """
+            MATCH (s:Saga)-[e:HAS_EPISODE]->(ep:Episodic {uuid: $uuid})
+            RETURN s.uuid AS saga_uuid, e.uuid AS edge_uuid,
+                   e.group_id AS group_id, e.created_at AS created_at
+            """,
+            uuid=uuid,
+        )
+
+        await _write(
+            executor,
+            tx,
+            'MATCH (n:Episodic {uuid: $uuid}) DETACH DELETE n',
+            uuid=uuid,
+        )
+    else:
+        mentions = []
+        next_episode_outgoing = []
+        next_episode_incoming = []
+        has_episode = []
+
+    await _write(
+        executor,
+        tx,
+        """
+        CREATE (n:Episodic {
+            uuid: $uuid,
+            name: $name,
+            group_id: $group_id,
+            created_at: $created_at,
+            source: $source,
+            source_description: $source_description,
+            content: $content,
+            content_embedding: $content_embedding,
+            valid_at: $valid_at,
+            entity_edges: $entity_edges
+        })
+        """,
+        **params,
+    )
+
+    for m in mentions:
+        await _write(
+            executor,
+            tx,
+            """
+            MATCH (ep:Episodic {uuid: $uuid}), (n:Entity {uuid: $entity_uuid})
+            CREATE (ep)-[:MENTIONS {uuid: $mention_uuid, group_id: $group_id, created_at: $created_at}]->(n)
+            """,
+            uuid=uuid,
+            entity_uuid=m['entity_uuid'],
+            mention_uuid=m['mention_uuid'],
+            group_id=m['group_id'],
+            created_at=m['created_at'],
+        )
+
+    for e in next_episode_outgoing:
+        await _write(
+            executor,
+            tx,
+            """
+            MATCH (ep:Episodic {uuid: $uuid}), (target:Episodic {uuid: $target_uuid})
+            CREATE (ep)-[:NEXT_EPISODE {uuid: $edge_uuid, group_id: $group_id, created_at: $created_at}]->(target)
+            """,
+            uuid=uuid,
+            target_uuid=e['target_uuid'],
+            edge_uuid=e['edge_uuid'],
+            group_id=e['group_id'],
+            created_at=e['created_at'],
+        )
+
+    for e in next_episode_incoming:
+        await _write(
+            executor,
+            tx,
+            """
+            MATCH (source:Episodic {uuid: $source_uuid}), (ep:Episodic {uuid: $uuid})
+            CREATE (source)-[:NEXT_EPISODE {uuid: $edge_uuid, group_id: $group_id, created_at: $created_at}]->(ep)
+            """,
+            uuid=uuid,
+            source_uuid=e['source_uuid'],
+            edge_uuid=e['edge_uuid'],
+            group_id=e['group_id'],
+            created_at=e['created_at'],
+        )
+
+    for e in has_episode:
+        await _write(
+            executor,
+            tx,
+            """
+            MATCH (s:Saga {uuid: $saga_uuid}), (ep:Episodic {uuid: $uuid})
+            CREATE (s)-[:HAS_EPISODE {uuid: $edge_uuid, group_id: $group_id, created_at: $created_at}]->(ep)
+            """,
+            uuid=uuid,
+            saga_uuid=e['saga_uuid'],
+            edge_uuid=e['edge_uuid'],
+            group_id=e['group_id'],
+            created_at=e['created_at'],
+        )
