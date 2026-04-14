@@ -21,6 +21,7 @@ async def _query(
     query: str,
     **kwargs: Any,
 ) -> list[dict[str, Any]]:
+    # Always uses executor (not tx) because KuzuDB tx.run() doesn't return results.
     records, _, _ = await executor.execute_query(query, **kwargs)
     return records  # type: ignore
 
@@ -50,20 +51,15 @@ async def hnsw_safe_save_entity_edge(
     params: dict[str, Any],
 ) -> None:
     uuid = params['uuid']
+    source_uuid = params.get('source_uuid') or params['source_node_uuid']
+    target_uuid = params.get('target_uuid') or params['target_node_uuid']
 
-    existing = await _query(
+    await _write(
         executor,
-        'MATCH (e:RelatesToNode_ {uuid: $uuid}) RETURN e.uuid AS uuid',
+        tx,
+        'MATCH (e:RelatesToNode_ {uuid: $uuid}) DETACH DELETE e',
         uuid=uuid,
     )
-
-    if existing:
-        await _write(
-            executor,
-            tx,
-            'MATCH (e:RelatesToNode_ {uuid: $uuid}) DETACH DELETE e',
-            uuid=uuid,
-        )
 
     await _write(
         executor,
@@ -90,22 +86,13 @@ async def hnsw_safe_save_entity_edge(
         executor,
         tx,
         """
-        MATCH (source:Entity {uuid: $source_uuid}), (e:RelatesToNode_ {uuid: $uuid})
-        CREATE (source)-[:RELATES_TO]->(e)
+        MATCH (source:Entity {uuid: $source_uuid}), (e:RelatesToNode_ {uuid: $uuid}),
+              (target:Entity {uuid: $target_uuid})
+        CREATE (source)-[:RELATES_TO]->(e), (e)-[:RELATES_TO]->(target)
         """,
-        source_uuid=params['source_uuid'],
+        source_uuid=source_uuid,
         uuid=uuid,
-    )
-
-    await _write(
-        executor,
-        tx,
-        """
-        MATCH (e:RelatesToNode_ {uuid: $uuid}), (target:Entity {uuid: $target_uuid})
-        CREATE (e)-[:RELATES_TO]->(target)
-        """,
-        uuid=uuid,
-        target_uuid=params['target_uuid'],
+        target_uuid=target_uuid,
     )
 
 
