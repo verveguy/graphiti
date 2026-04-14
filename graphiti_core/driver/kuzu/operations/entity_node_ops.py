@@ -19,13 +19,13 @@ import logging
 from typing import Any
 
 from graphiti_core.driver.driver import GraphProvider
+from graphiti_core.driver.kuzu.hnsw_safe_writes import hnsw_safe_save_entity_node
 from graphiti_core.driver.kuzu.operations.record_parsers import parse_kuzu_entity_node
 from graphiti_core.driver.operations.entity_node_ops import EntityNodeOperations
 from graphiti_core.driver.query_executor import QueryExecutor, Transaction
 from graphiti_core.errors import NodeNotFoundError
 from graphiti_core.models.nodes.node_db_queries import (
     get_entity_node_return_query,
-    get_entity_node_save_query,
 )
 from graphiti_core.nodes import EntityNode
 
@@ -52,12 +52,7 @@ class KuzuEntityNodeOperations(EntityNodeOperations):
             'attributes': attrs_json,
         }
 
-        query = get_entity_node_save_query(GraphProvider.KUZU, '')
-
-        if tx is not None:
-            await tx.run(query, **params)
-        else:
-            await executor.execute_query(query, **params)
+        await hnsw_safe_save_entity_node(executor, tx, params)
 
         logger.debug(f'Saved Node to Graph: {node.uuid}')
 

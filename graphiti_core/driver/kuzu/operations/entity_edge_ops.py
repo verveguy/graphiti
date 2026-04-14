@@ -19,6 +19,7 @@ import logging
 from typing import Any
 
 from graphiti_core.driver.driver import GraphProvider
+from graphiti_core.driver.kuzu.hnsw_safe_writes import hnsw_safe_save_entity_edge
 from graphiti_core.driver.kuzu.operations.record_parsers import parse_kuzu_entity_edge
 from graphiti_core.driver.operations.entity_edge_ops import EntityEdgeOperations
 from graphiti_core.driver.query_executor import QueryExecutor, Transaction
@@ -26,7 +27,6 @@ from graphiti_core.edges import EntityEdge
 from graphiti_core.errors import EdgeNotFoundError
 from graphiti_core.models.edges.edge_db_queries import (
     get_entity_edge_return_query,
-    get_entity_edge_save_query,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,11 +55,7 @@ class KuzuEntityEdgeOperations(EntityEdgeOperations):
             'attributes': json.dumps(edge.attributes or {}),
         }
 
-        query = get_entity_edge_save_query(GraphProvider.KUZU)
-        if tx is not None:
-            await tx.run(query, **params)
-        else:
-            await executor.execute_query(query, **params)
+        await hnsw_safe_save_entity_edge(executor, tx, params)
 
         logger.debug(f'Saved Edge to Graph: {edge.uuid}')
 
