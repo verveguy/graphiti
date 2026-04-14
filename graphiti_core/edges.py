@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import LiteralString
 
 from graphiti_core.driver.driver import GraphDriver, GraphProvider
+from graphiti_core.driver.kuzu.hnsw_safe_writes import hnsw_safe_save_entity_edge
 from graphiti_core.embedder import EmbedderClient
 from graphiti_core.errors import EdgeNotFoundError, GroupsEdgesNotFoundError
 from graphiti_core.helpers import parse_db_date
@@ -288,7 +289,9 @@ class EntityEdge(Edge):
         self.fact_embedding = await embedder.create(input_data=[text])
 
         end = time()
-        logger.debug(f'embedded edge {self.uuid} fact ({len(text)} chars) in {(end - start) * 1000} ms')
+        logger.debug(
+            f'embedded edge {self.uuid} fact ({len(text)} chars) in {(end - start) * 1000} ms'
+        )
 
         return self.fact_embedding
 
@@ -351,10 +354,8 @@ class EntityEdge(Edge):
 
         if driver.provider == GraphProvider.KUZU:
             edge_data['attributes'] = json.dumps(self.attributes)
-            result = await driver.execute_query(
-                get_entity_edge_save_query(driver.provider),
-                **edge_data,
-            )
+            await hnsw_safe_save_entity_edge(driver, None, edge_data)
+            result = None
         else:
             edge_data.update(self.attributes or {})
             result = await driver.execute_query(
