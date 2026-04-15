@@ -17,7 +17,7 @@ NEO4J_TO_FALKORDB_MAPPING = {
     'episode_content': 'Episodic',
     'edge_name_and_fact': 'RELATES_TO',
 }
-# Mapping from fulltext index names to Kuzu node labels
+# Mapping from fulltext index names to LadybugDB node labels
 INDEX_TO_LABEL_LADYBUG_MAPPING = {
     'node_name_and_summary': 'Entity',
     'community_name': 'Community',

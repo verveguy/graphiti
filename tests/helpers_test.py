@@ -47,11 +47,11 @@ if os.getenv('DISABLE_FALKORDB') is None:
     except ImportError:
         raise
 
-if os.getenv('DISABLE_KUZU') is None:
+if os.getenv('DISABLE_LADYBUG') is None:
     try:
-        from graphiti_core.driver.kuzu_driver import KuzuDriver
+        from graphiti_core.driver.ladybug_driver import LadybugDriver
 
-        drivers.append(GraphProvider.KUZU)
+        drivers.append(GraphProvider.LADYBUG)
     except ImportError:
         raise
 
@@ -78,7 +78,7 @@ NEPTUNE_HOST = os.getenv('NEPTUNE_HOST', 'localhost')
 NEPTUNE_PORT = os.getenv('NEPTUNE_PORT', 8182)
 AOSS_HOST = os.getenv('AOSS_HOST', None)
 
-KUZU_DB = os.getenv('KUZU_DB', ':memory:')
+LADYBUG_DB = os.getenv('LADYBUG_DB', ':memory:')
 
 group_id = 'graphiti_test_group'
 group_id_2 = 'graphiti_test_group_2'
@@ -98,9 +98,9 @@ def get_driver(provider: GraphProvider) -> GraphDriver:
             username=FALKORDB_USER,
             password=FALKORDB_PASSWORD,
         )
-    elif provider == GraphProvider.KUZU:
-        driver = KuzuDriver(
-            db=KUZU_DB,
+    elif provider == GraphProvider.LADYBUG:
+        driver = LadybugDriver(
+            db=LADYBUG_DB,
         )
         return driver
     elif provider == GraphProvider.NEPTUNE:
