@@ -325,7 +325,7 @@ def _vectorized_cosine_rank(
 
 def fulltext_query(query: str, group_ids: list[str] | None, driver: GraphDriver):
     if driver.provider == GraphProvider.LADYBUG:
-        # Kuzu only supports simple queries.
+        # LadybugDB only supports simple queries.
         if len(query.split(' ')) > MAX_QUERY_LENGTH:
             return ''
         return query
@@ -892,7 +892,7 @@ async def edge_bfs_search(
         filter_query = ' WHERE ' + (' AND '.join(filter_queries))
 
     if driver.provider == GraphProvider.LADYBUG:
-        # Kuzu stores entity edges twice with an intermediate node, so we need to match them
+        # LadybugDB stores entity edges twice with an intermediate node, so we need to match them
         # separately for the correct BFS depth.
         depth = bfs_max_depth * 2 - 1
         match_queries = [
@@ -1922,7 +1922,7 @@ async def get_relevant_nodes(
         if embedding_size == 0:
             return []
 
-        # FIXME: Kuzu currently does not support using variables such as `node.fulltext_query` as an input to FTS, which means `get_relevant_nodes()` won't work with Kuzu as the graph driver.
+        # FIXME: LadybugDB currently does not support using variables such as `node.fulltext_query` as an input to FTS, which means `get_relevant_nodes()` won't work with LadybugDB as the graph driver.
         query = (
             """
                                                                                                                                     UNWIND $nodes AS node
@@ -2712,7 +2712,7 @@ async def episode_similarity_search(
     """Search Episodic nodes by content_embedding similarity.
 
     Returns a list of (EpisodicNode, score) tuples ordered by descending similarity.
-    Uses HNSW vector index for Kuzu/LadybugDB, with brute-force fallback.
+    Uses HNSW vector index for LadybugDB, with brute-force fallback.
     """
     filter_queries: list[str] = []
     filter_params: dict[str, Any] = {}
@@ -2804,7 +2804,7 @@ async def episode_similarity_search(
                 **filter_params,
             )
     else:
-        # Brute-force for non-Kuzu providers
+        # Brute-force for non-LadybugDB providers
         filter_query = (' WHERE ' + ' AND '.join(filter_queries)) if filter_queries else ''
         search_vector_var = '$search_vector'
 

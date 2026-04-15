@@ -28,7 +28,7 @@ from graphiti_core.driver.driver import (
     GraphDriverSession,
     GraphProvider,
 )
-from graphiti_core.driver.kuzu.hnsw_safe_writes import (
+from graphiti_core.driver.ladybug.hnsw_safe_writes import (
     hnsw_safe_save_entity_edge,
     hnsw_safe_save_entity_node,
     hnsw_safe_save_episode_node,
@@ -227,7 +227,7 @@ async def add_nodes_and_edges_bulk_tx(
         await driver.graph_operations_interface.edge_save_bulk(None, driver, tx, edges)
 
     elif driver.provider == GraphProvider.LADYBUG:
-        # FIXME: Kuzu's UNWIND does not currently support STRUCT[] type properly, so we insert the data one by one instead for now.
+        # FIXME: LadybugDB's UNWIND does not currently support STRUCT[] type properly, so we insert the data one by one instead for now.
         for episode in episodes:
             await hnsw_safe_save_episode_node(driver, tx, episode)
         for node in nodes:

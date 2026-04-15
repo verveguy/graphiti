@@ -30,7 +30,7 @@ from graphiti_core.driver.driver import (
     GraphDriver,
     GraphProvider,
 )
-from graphiti_core.driver.kuzu.hnsw_safe_writes import (
+from graphiti_core.driver.ladybug.hnsw_safe_writes import (
     hnsw_safe_save_community_node,
     hnsw_safe_save_entity_node,
     hnsw_safe_save_episode_node,
@@ -132,7 +132,7 @@ class Node(BaseModel, ABC):
                         """,
                         uuid=self.uuid,
                     )
-                # Entity edges are actually nodes in Kuzu, so simple `DETACH DELETE` will not work.
+                # Entity edges are actually nodes in LadybugDB, so simple `DETACH DELETE` will not work.
                 # Explicitly delete the "edge" nodes first, then the entity node.
                 await driver.execute_query(
                     """
@@ -201,7 +201,7 @@ class Node(BaseModel, ABC):
                         """,
                         group_id=group_id,
                     )
-                # Entity edges are actually nodes in Kuzu, so simple `DETACH DELETE` will not work.
+                # Entity edges are actually nodes in LadybugDB, so simple `DETACH DELETE` will not work.
                 # Explicitly delete the "edge" nodes first, then the entity node.
                 await driver.execute_query(
                     """
@@ -258,7 +258,7 @@ class Node(BaseModel, ABC):
                         """,
                         uuids=uuids,
                     )
-                # Entity edges are actually nodes in Kuzu, so simple `DETACH DELETE` will not work.
+                # Entity edges are actually nodes in LadybugDB, so simple `DETACH DELETE` will not work.
                 # Explicitly delete the "edge" nodes first, then the entity node.
                 await driver.execute_query(
                     """

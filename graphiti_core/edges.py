@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import LiteralString
 
 from graphiti_core.driver.driver import GraphDriver, GraphProvider
-from graphiti_core.driver.kuzu.hnsw_safe_writes import hnsw_safe_save_entity_edge
+from graphiti_core.driver.ladybug.hnsw_safe_writes import hnsw_safe_save_entity_edge
 from graphiti_core.embedder import EmbedderClient
 from graphiti_core.errors import EdgeNotFoundError, GroupsEdgesNotFoundError
 from graphiti_core.helpers import parse_db_date
