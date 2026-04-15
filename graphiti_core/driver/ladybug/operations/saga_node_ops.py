@@ -37,7 +37,7 @@ def _saga_node_from_record(record: Any) -> SagaNode:
     )
 
 
-class KuzuSagaNodeOperations(SagaNodeOperations):
+class LadybugSagaNodeOperations(SagaNodeOperations):
     async def save(
         self,
         executor: QueryExecutor,
@@ -65,7 +65,7 @@ class KuzuSagaNodeOperations(SagaNodeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support UNWIND - iterate and save individually
+        # LadybugDB doesn't support UNWIND - iterate and save individually
         for node in nodes:
             await self.save(executor, node, tx=tx)
 
@@ -93,7 +93,7 @@ class KuzuSagaNodeOperations(SagaNodeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support IN TRANSACTIONS OF - simple delete
+        # LadybugDB doesn't support IN TRANSACTIONS OF - simple delete
         query = """
             MATCH (n:Saga {group_id: $group_id})
             DETACH DELETE n
@@ -110,7 +110,7 @@ class KuzuSagaNodeOperations(SagaNodeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support IN TRANSACTIONS OF - simple delete
+        # LadybugDB doesn't support IN TRANSACTIONS OF - simple delete
         query = """
             MATCH (n:Saga)
             WHERE n.uuid IN $uuids

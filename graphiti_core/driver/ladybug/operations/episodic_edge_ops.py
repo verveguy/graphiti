@@ -42,7 +42,7 @@ def _episodic_edge_from_record(record: Any) -> EpisodicEdge:
     )
 
 
-class KuzuEpisodicEdgeOperations(EpisodicEdgeOperations):
+class LadybugEpisodicEdgeOperations(EpisodicEdgeOperations):
     async def save(
         self,
         executor: QueryExecutor,
@@ -70,7 +70,7 @@ class KuzuEpisodicEdgeOperations(EpisodicEdgeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support UNWIND - iterate and save individually
+        # LadybugDB doesn't support UNWIND - iterate and save individually
         query = get_episodic_edge_save_bulk_query(GraphProvider.KUZU)
         for edge in edges:
             params: dict[str, Any] = {

@@ -18,7 +18,7 @@ import logging
 from typing import Any
 
 from graphiti_core.driver.driver import GraphProvider
-from graphiti_core.driver.kuzu.operations.record_parsers import parse_kuzu_entity_node
+from graphiti_core.driver.ladybug.operations.record_parsers import parse_ladybug_entity_node
 from graphiti_core.driver.operations.graph_ops import GraphMaintenanceOperations
 from graphiti_core.driver.operations.graph_utils import Neighbor, label_propagation
 from graphiti_core.driver.query_executor import QueryExecutor
@@ -34,7 +34,7 @@ from graphiti_core.nodes import CommunityNode, EntityNode, EpisodicNode
 logger = logging.getLogger(__name__)
 
 
-class KuzuGraphMaintenanceOperations(GraphMaintenanceOperations):
+class LadybugGraphMaintenanceOperations(GraphMaintenanceOperations):
     async def clear_data(
         self,
         executor: QueryExecutor,
@@ -43,7 +43,7 @@ class KuzuGraphMaintenanceOperations(GraphMaintenanceOperations):
         if group_ids is None:
             await executor.execute_query('MATCH (n) DETACH DELETE n')
         else:
-            # Kuzu requires deleting RelatesToNode_ intermediates in addition to
+            # LadybugDB requires deleting RelatesToNode_ intermediates in addition to
             # Entity, Episodic, and Community nodes.
             for label in ['RelatesToNode_', 'Entity', 'Episodic', 'Community']:
                 await executor.execute_query(
@@ -63,7 +63,7 @@ class KuzuGraphMaintenanceOperations(GraphMaintenanceOperations):
         if delete_existing:
             await self.delete_all_indexes(executor)
 
-        # Kuzu schema is static (created in setup_schema), so range indices
+        # LadybugDB schema is static (created in setup_schema), so range indices
         # return an empty list. Only FTS indices need to be created here.
         range_indices = get_range_indices(GraphProvider.KUZU)
         fulltext_indices = get_fulltext_indices(GraphProvider.KUZU)
@@ -75,7 +75,7 @@ class KuzuGraphMaintenanceOperations(GraphMaintenanceOperations):
         self,
         executor: QueryExecutor,
     ) -> None:
-        # Kuzu does not have a standard way to drop all indexes programmatically.
+        # LadybugDB does not have a standard way to drop all indexes programmatically.
         pass
 
     async def get_community_clusters(
@@ -110,10 +110,10 @@ class KuzuGraphMaintenanceOperations(GraphMaintenanceOperations):
                 + get_entity_node_return_query(GraphProvider.KUZU),
                 group_ids=[group_id],
             )
-            nodes = [parse_kuzu_entity_node(r) for r in node_records]
+            nodes = [parse_ladybug_entity_node(r) for r in node_records]
 
             for node in nodes:
-                # Kuzu edges are modeled through RelatesToNode_ intermediate nodes
+                # LadybugDB edges are modeled through RelatesToNode_ intermediate nodes
                 records, _, _ = await executor.execute_query(
                     """
                     MATCH (n:Entity {group_id: $group_id, uuid: $uuid})-[:RELATES_TO]->(:RelatesToNode_)-[:RELATES_TO]-(m:Entity {group_id: $group_id})
@@ -146,7 +146,7 @@ class KuzuGraphMaintenanceOperations(GraphMaintenanceOperations):
                     + get_entity_node_return_query(GraphProvider.KUZU),
                     uuids=cluster,
                 )
-                community_clusters.append([parse_kuzu_entity_node(r) for r in cluster_records])
+                community_clusters.append([parse_ladybug_entity_node(r) for r in cluster_records])
 
         return community_clusters
 
@@ -180,7 +180,7 @@ class KuzuGraphMaintenanceOperations(GraphMaintenanceOperations):
             return
 
         # If the node has no community, find the mode community of surrounding
-        # entities. Kuzu uses RelatesToNode_ as an intermediate for RELATES_TO edges.
+        # entities. LadybugDB uses RelatesToNode_ as an intermediate for RELATES_TO edges.
         records, _, _ = await executor.execute_query(
             """
             MATCH (c:Community)-[:HAS_MEMBER]->(m:Entity)-[:RELATES_TO]->(:RelatesToNode_)-[:RELATES_TO]-(n:Entity {uuid: $entity_uuid})
@@ -207,7 +207,7 @@ class KuzuGraphMaintenanceOperations(GraphMaintenanceOperations):
             uuids=episode_uuids,
         )
 
-        return [parse_kuzu_entity_node(r) for r in records]
+        return [parse_ladybug_entity_node(r) for r in records]
 
     async def get_communities_by_nodes(
         self,

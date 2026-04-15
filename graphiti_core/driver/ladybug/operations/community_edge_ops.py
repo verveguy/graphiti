@@ -17,21 +17,22 @@ limitations under the License.
 import logging
 from typing import Any
 
-from graphiti_core.driver.operations.next_episode_edge_ops import NextEpisodeEdgeOperations
+from graphiti_core.driver.driver import GraphProvider
+from graphiti_core.driver.operations.community_edge_ops import CommunityEdgeOperations
 from graphiti_core.driver.query_executor import QueryExecutor, Transaction
-from graphiti_core.edges import NextEpisodeEdge
+from graphiti_core.edges import CommunityEdge
 from graphiti_core.errors import EdgeNotFoundError
 from graphiti_core.helpers import parse_db_date
 from graphiti_core.models.edges.edge_db_queries import (
-    NEXT_EPISODE_EDGE_RETURN,
-    NEXT_EPISODE_EDGE_SAVE,
+    COMMUNITY_EDGE_RETURN,
+    get_community_edge_save_query,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _next_episode_edge_from_record(record: Any) -> NextEpisodeEdge:
-    return NextEpisodeEdge(
+def _community_edge_from_record(record: Any) -> CommunityEdge:
+    return CommunityEdge(
         uuid=record['uuid'],
         group_id=record['group_id'],
         source_node_uuid=record['source_node_uuid'],
@@ -40,45 +41,36 @@ def _next_episode_edge_from_record(record: Any) -> NextEpisodeEdge:
     )
 
 
-class KuzuNextEpisodeEdgeOperations(NextEpisodeEdgeOperations):
+class LadybugCommunityEdgeOperations(CommunityEdgeOperations):
     async def save(
         self,
         executor: QueryExecutor,
-        edge: NextEpisodeEdge,
+        edge: CommunityEdge,
         tx: Transaction | None = None,
     ) -> None:
+        query = get_community_edge_save_query(GraphProvider.KUZU)
         params: dict[str, Any] = {
-            'source_episode_uuid': edge.source_node_uuid,
-            'target_episode_uuid': edge.target_node_uuid,
+            'community_uuid': edge.source_node_uuid,
+            'entity_uuid': edge.target_node_uuid,
             'uuid': edge.uuid,
             'group_id': edge.group_id,
             'created_at': edge.created_at,
         }
         if tx is not None:
-            await tx.run(NEXT_EPISODE_EDGE_SAVE, **params)
+            await tx.run(query, **params)
         else:
-            await executor.execute_query(NEXT_EPISODE_EDGE_SAVE, **params)
+            await executor.execute_query(query, **params)
 
         logger.debug(f'Saved Edge to Graph: {edge.uuid}')
-
-    async def save_bulk(
-        self,
-        executor: QueryExecutor,
-        edges: list[NextEpisodeEdge],
-        tx: Transaction | None = None,
-        batch_size: int = 100,
-    ) -> None:
-        for edge in edges:
-            await self.save(executor, edge, tx=tx)
 
     async def delete(
         self,
         executor: QueryExecutor,
-        edge: NextEpisodeEdge,
+        edge: CommunityEdge,
         tx: Transaction | None = None,
     ) -> None:
         query = """
-            MATCH (n:Episodic)-[e:NEXT_EPISODE {uuid: $uuid}]->(m:Episodic)
+            MATCH (n:Community)-[e:HAS_MEMBER {uuid: $uuid}]->(m)
             DELETE e
         """
         if tx is not None:
@@ -95,7 +87,7 @@ class KuzuNextEpisodeEdgeOperations(NextEpisodeEdgeOperations):
         tx: Transaction | None = None,
     ) -> None:
         query = """
-            MATCH (n:Episodic)-[e:NEXT_EPISODE]->(m:Episodic)
+            MATCH (n:Community)-[e:HAS_MEMBER]->(m)
             WHERE e.uuid IN $uuids
             DELETE e
         """
@@ -108,16 +100,16 @@ class KuzuNextEpisodeEdgeOperations(NextEpisodeEdgeOperations):
         self,
         executor: QueryExecutor,
         uuid: str,
-    ) -> NextEpisodeEdge:
+    ) -> CommunityEdge:
         query = (
             """
-            MATCH (n:Episodic)-[e:NEXT_EPISODE {uuid: $uuid}]->(m:Episodic)
+            MATCH (n:Community)-[e:HAS_MEMBER {uuid: $uuid}]->(m)
             RETURN
             """
-            + NEXT_EPISODE_EDGE_RETURN
+            + COMMUNITY_EDGE_RETURN
         )
         records, _, _ = await executor.execute_query(query, uuid=uuid)
-        edges = [_next_episode_edge_from_record(r) for r in records]
+        edges = [_community_edge_from_record(r) for r in records]
         if len(edges) == 0:
             raise EdgeNotFoundError(uuid)
         return edges[0]
@@ -126,17 +118,17 @@ class KuzuNextEpisodeEdgeOperations(NextEpisodeEdgeOperations):
         self,
         executor: QueryExecutor,
         uuids: list[str],
-    ) -> list[NextEpisodeEdge]:
+    ) -> list[CommunityEdge]:
         query = (
             """
-            MATCH (n:Episodic)-[e:NEXT_EPISODE]->(m:Episodic)
+            MATCH (n:Community)-[e:HAS_MEMBER]->(m)
             WHERE e.uuid IN $uuids
             RETURN
             """
-            + NEXT_EPISODE_EDGE_RETURN
+            + COMMUNITY_EDGE_RETURN
         )
         records, _, _ = await executor.execute_query(query, uuids=uuids)
-        return [_next_episode_edge_from_record(r) for r in records]
+        return [_community_edge_from_record(r) for r in records]
 
     async def get_by_group_ids(
         self,
@@ -144,19 +136,19 @@ class KuzuNextEpisodeEdgeOperations(NextEpisodeEdgeOperations):
         group_ids: list[str],
         limit: int | None = None,
         uuid_cursor: str | None = None,
-    ) -> list[NextEpisodeEdge]:
+    ) -> list[CommunityEdge]:
         cursor_clause = 'AND e.uuid < $uuid' if uuid_cursor else ''
         limit_clause = 'LIMIT $limit' if limit is not None else ''
         query = (
             """
-            MATCH (n:Episodic)-[e:NEXT_EPISODE]->(m:Episodic)
+            MATCH (n:Community)-[e:HAS_MEMBER]->(m)
             WHERE e.group_id IN $group_ids
             """
             + cursor_clause
             + """
             RETURN
             """
-            + NEXT_EPISODE_EDGE_RETURN
+            + COMMUNITY_EDGE_RETURN
             + """
             ORDER BY e.uuid DESC
             """
@@ -168,4 +160,4 @@ class KuzuNextEpisodeEdgeOperations(NextEpisodeEdgeOperations):
             uuid=uuid_cursor,
             limit=limit,
         )
-        return [_next_episode_edge_from_record(r) for r in records]
+        return [_community_edge_from_record(r) for r in records]

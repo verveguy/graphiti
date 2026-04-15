@@ -19,8 +19,8 @@ import logging
 from typing import Any
 
 from graphiti_core.driver.driver import GraphProvider
-from graphiti_core.driver.kuzu.hnsw_safe_writes import hnsw_safe_save_entity_edge
-from graphiti_core.driver.kuzu.operations.record_parsers import parse_kuzu_entity_edge
+from graphiti_core.driver.ladybug.hnsw_safe_writes import hnsw_safe_save_entity_edge
+from graphiti_core.driver.ladybug.operations.record_parsers import parse_ladybug_entity_edge
 from graphiti_core.driver.operations.entity_edge_ops import EntityEdgeOperations
 from graphiti_core.driver.query_executor import QueryExecutor, Transaction
 from graphiti_core.edges import EntityEdge
@@ -32,7 +32,7 @@ from graphiti_core.models.edges.edge_db_queries import (
 logger = logging.getLogger(__name__)
 
 
-class KuzuEntityEdgeOperations(EntityEdgeOperations):
+class LadybugEntityEdgeOperations(EntityEdgeOperations):
     async def save(
         self,
         executor: QueryExecutor,
@@ -66,7 +66,7 @@ class KuzuEntityEdgeOperations(EntityEdgeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support UNWIND - iterate and save individually
+        # LadybugDB doesn't support UNWIND - iterate and save individually
         for edge in edges:
             await self.save(executor, edge, tx=tx)
 
@@ -113,7 +113,7 @@ class KuzuEntityEdgeOperations(EntityEdgeOperations):
             RETURN
             """ + get_entity_edge_return_query(GraphProvider.KUZU)
         records, _, _ = await executor.execute_query(query, uuid=uuid)
-        edges = [parse_kuzu_entity_edge(r) for r in records]
+        edges = [parse_ladybug_entity_edge(r) for r in records]
         if len(edges) == 0:
             raise EdgeNotFoundError(uuid)
         return edges[0]
@@ -131,7 +131,7 @@ class KuzuEntityEdgeOperations(EntityEdgeOperations):
             RETURN
             """ + get_entity_edge_return_query(GraphProvider.KUZU)
         records, _, _ = await executor.execute_query(query, uuids=uuids)
-        return [parse_kuzu_entity_edge(r) for r in records]
+        return [parse_ladybug_entity_edge(r) for r in records]
 
     async def get_by_group_ids(
         self,
@@ -163,7 +163,7 @@ class KuzuEntityEdgeOperations(EntityEdgeOperations):
             uuid=uuid_cursor,
             limit=limit,
         )
-        return [parse_kuzu_entity_edge(r) for r in records]
+        return [parse_ladybug_entity_edge(r) for r in records]
 
     async def get_between_nodes(
         self,
@@ -180,7 +180,7 @@ class KuzuEntityEdgeOperations(EntityEdgeOperations):
             source_node_uuid=source_node_uuid,
             target_node_uuid=target_node_uuid,
         )
-        return [parse_kuzu_entity_edge(r) for r in records]
+        return [parse_ladybug_entity_edge(r) for r in records]
 
     async def get_by_node_uuid(
         self,
@@ -192,7 +192,7 @@ class KuzuEntityEdgeOperations(EntityEdgeOperations):
             RETURN
             """ + get_entity_edge_return_query(GraphProvider.KUZU)
         records, _, _ = await executor.execute_query(query, node_uuid=node_uuid)
-        return [parse_kuzu_entity_edge(r) for r in records]
+        return [parse_ladybug_entity_edge(r) for r in records]
 
     async def load_embeddings(
         self,
