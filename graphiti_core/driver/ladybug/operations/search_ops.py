@@ -85,7 +85,7 @@ class LadybugSearchOperations(SearchOperations):
             return []
 
         filter_queries, filter_params = node_search_filter_query_constructor(
-            search_filter, GraphProvider.KUZU
+            search_filter, GraphProvider.LADYBUG
         )
 
         if group_ids is not None:
@@ -98,7 +98,7 @@ class LadybugSearchOperations(SearchOperations):
 
         cypher = (
             get_nodes_query(
-                'node_name_and_summary', '$query', limit=limit, provider=GraphProvider.KUZU
+                'node_name_and_summary', '$query', limit=limit, provider=GraphProvider.LADYBUG
             )
             + ' WITH node AS n, score'
             + filter_query
@@ -108,7 +108,7 @@ class LadybugSearchOperations(SearchOperations):
             LIMIT $limit
             RETURN
             """
-            + get_entity_node_return_query(GraphProvider.KUZU)
+            + get_entity_node_return_query(GraphProvider.LADYBUG)
         )
 
         records, _, _ = await executor.execute_query(
@@ -130,7 +130,7 @@ class LadybugSearchOperations(SearchOperations):
         min_score: float = 0.6,
     ) -> list[EntityNode]:
         filter_queries, filter_params = node_search_filter_query_constructor(
-            search_filter, GraphProvider.KUZU
+            search_filter, GraphProvider.LADYBUG
         )
 
         if group_ids is not None:
@@ -149,13 +149,13 @@ class LadybugSearchOperations(SearchOperations):
             + """
             WITH n, """
             + get_vector_cosine_func_query(
-                'n.name_embedding', search_vector_var, GraphProvider.KUZU
+                'n.name_embedding', search_vector_var, GraphProvider.LADYBUG
             )
             + """ AS score
             WHERE score > $min_score
             RETURN
             """
-            + get_entity_node_return_query(GraphProvider.KUZU)
+            + get_entity_node_return_query(GraphProvider.LADYBUG)
             + """
             ORDER BY score DESC
             LIMIT $limit
@@ -185,7 +185,7 @@ class LadybugSearchOperations(SearchOperations):
             return []
 
         filter_queries, filter_params = node_search_filter_query_constructor(
-            search_filter, GraphProvider.KUZU
+            search_filter, GraphProvider.LADYBUG
         )
 
         if group_ids is not None:
@@ -216,7 +216,7 @@ class LadybugSearchOperations(SearchOperations):
                 + """
                 RETURN
                 """
-                + get_entity_node_return_query(GraphProvider.KUZU)
+                + get_entity_node_return_query(GraphProvider.LADYBUG)
                 + """
                 LIMIT $limit
                 """
@@ -241,7 +241,7 @@ class LadybugSearchOperations(SearchOperations):
                 + """
                 RETURN
                 """
-                + get_entity_node_return_query(GraphProvider.KUZU)
+                + get_entity_node_return_query(GraphProvider.LADYBUG)
                 + """
                 LIMIT $limit
                 """
@@ -267,7 +267,7 @@ class LadybugSearchOperations(SearchOperations):
                     + """
                     RETURN
                     """
-                    + get_entity_node_return_query(GraphProvider.KUZU)
+                    + get_entity_node_return_query(GraphProvider.LADYBUG)
                     + """
                     LIMIT $limit
                     """
@@ -309,7 +309,7 @@ class LadybugSearchOperations(SearchOperations):
             return []
 
         filter_queries, filter_params = edge_search_filter_query_constructor(
-            search_filter, GraphProvider.KUZU
+            search_filter, GraphProvider.LADYBUG
         )
 
         if group_ids is not None:
@@ -323,7 +323,7 @@ class LadybugSearchOperations(SearchOperations):
         # LadybugDB FTS for edges queries the RelatesToNode_ label, then we match
         # the full pattern to get source (n) and target (m) Entity nodes.
         cypher = (
-            get_relationships_query('edge_name_and_fact', limit=limit, provider=GraphProvider.KUZU)
+            get_relationships_query('edge_name_and_fact', limit=limit, provider=GraphProvider.LADYBUG)
             + """
             WITH node AS e, score
             MATCH (n:Entity)-[:RELATES_TO]->(e)-[:RELATES_TO]->(m:Entity)
@@ -333,7 +333,7 @@ class LadybugSearchOperations(SearchOperations):
             WITH e, score, n, m
             RETURN
             """
-            + get_entity_edge_return_query(GraphProvider.KUZU)
+            + get_entity_edge_return_query(GraphProvider.LADYBUG)
             + """
             ORDER BY score DESC
             LIMIT $limit
@@ -361,7 +361,7 @@ class LadybugSearchOperations(SearchOperations):
         min_score: float = 0.6,
     ) -> list[EntityEdge]:
         filter_queries, filter_params = edge_search_filter_query_constructor(
-            search_filter, GraphProvider.KUZU
+            search_filter, GraphProvider.LADYBUG
         )
 
         if group_ids is not None:
@@ -388,13 +388,13 @@ class LadybugSearchOperations(SearchOperations):
             + """
             WITH DISTINCT e, n, m, """
             + get_vector_cosine_func_query(
-                'e.fact_embedding', search_vector_var, GraphProvider.KUZU
+                'e.fact_embedding', search_vector_var, GraphProvider.LADYBUG
             )
             + """ AS score
             WHERE score > $min_score
             RETURN
             """
-            + get_entity_edge_return_query(GraphProvider.KUZU)
+            + get_entity_edge_return_query(GraphProvider.LADYBUG)
             + """
             ORDER BY score DESC
             LIMIT $limit
@@ -424,7 +424,7 @@ class LadybugSearchOperations(SearchOperations):
             return []
 
         filter_queries, filter_params = edge_search_filter_query_constructor(
-            search_filter, GraphProvider.KUZU
+            search_filter, GraphProvider.LADYBUG
         )
 
         if group_ids is not None:
@@ -451,7 +451,7 @@ class LadybugSearchOperations(SearchOperations):
                 + """
                 RETURN DISTINCT
                 """
-                + get_entity_edge_return_query(GraphProvider.KUZU)
+                + get_entity_edge_return_query(GraphProvider.LADYBUG)
                 + """
                 LIMIT $limit
                 """
@@ -475,7 +475,7 @@ class LadybugSearchOperations(SearchOperations):
                 + """
                 RETURN DISTINCT
                 """
-                + get_entity_edge_return_query(GraphProvider.KUZU)
+                + get_entity_edge_return_query(GraphProvider.LADYBUG)
                 + """
                 LIMIT $limit
                 """
@@ -523,7 +523,7 @@ class LadybugSearchOperations(SearchOperations):
             filter_params['group_ids'] = group_ids
 
         cypher = (
-            get_nodes_query('episode_content', '$query', limit=limit, provider=GraphProvider.KUZU)
+            get_nodes_query('episode_content', '$query', limit=limit, provider=GraphProvider.LADYBUG)
             + """
             WITH node AS episode, score
             MATCH (e:Episodic)
@@ -566,7 +566,7 @@ class LadybugSearchOperations(SearchOperations):
             filter_params['group_ids'] = group_ids
 
         cypher = (
-            get_nodes_query('community_name', '$query', limit=limit, provider=GraphProvider.KUZU)
+            get_nodes_query('community_name', '$query', limit=limit, provider=GraphProvider.LADYBUG)
             + """
             WITH node AS c, score
             WITH c, score
@@ -612,7 +612,7 @@ class LadybugSearchOperations(SearchOperations):
             WITH c,
             """
             + get_vector_cosine_func_query(
-                'c.name_embedding', search_vector_var, GraphProvider.KUZU
+                'c.name_embedding', search_vector_var, GraphProvider.LADYBUG
             )
             + """ AS score
             WHERE score > $min_score
@@ -682,7 +682,7 @@ class LadybugSearchOperations(SearchOperations):
             MATCH (n:Entity)
             WHERE n.uuid IN $uuids
             RETURN
-            """ + get_entity_node_return_query(GraphProvider.KUZU)
+            """ + get_entity_node_return_query(GraphProvider.LADYBUG)
 
         records, _, _ = await executor.execute_query(get_query, uuids=reranked_uuids)
 
@@ -730,7 +730,7 @@ class LadybugSearchOperations(SearchOperations):
             MATCH (n:Entity)
             WHERE n.uuid IN $uuids
             RETURN
-            """ + get_entity_node_return_query(GraphProvider.KUZU)
+            """ + get_entity_node_return_query(GraphProvider.LADYBUG)
 
         records, _, _ = await executor.execute_query(get_query, uuids=reranked_uuids)
 
@@ -741,13 +741,13 @@ class LadybugSearchOperations(SearchOperations):
 
     def build_node_search_filters(self, search_filters: SearchFilters) -> Any:
         filter_queries, filter_params = node_search_filter_query_constructor(
-            search_filters, GraphProvider.KUZU
+            search_filters, GraphProvider.LADYBUG
         )
         return {'filter_queries': filter_queries, 'filter_params': filter_params}
 
     def build_edge_search_filters(self, search_filters: SearchFilters) -> Any:
         filter_queries, filter_params = edge_search_filter_query_constructor(
-            search_filters, GraphProvider.KUZU
+            search_filters, GraphProvider.LADYBUG
         )
         return {'filter_queries': filter_queries, 'filter_params': filter_params}
 

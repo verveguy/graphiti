@@ -111,7 +111,7 @@ class LadybugEntityEdgeOperations(EntityEdgeOperations):
         query = """
             MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_ {uuid: $uuid})-[:RELATES_TO]->(m:Entity)
             RETURN
-            """ + get_entity_edge_return_query(GraphProvider.KUZU)
+            """ + get_entity_edge_return_query(GraphProvider.LADYBUG)
         records, _, _ = await executor.execute_query(query, uuid=uuid)
         edges = [parse_ladybug_entity_edge(r) for r in records]
         if len(edges) == 0:
@@ -129,7 +129,7 @@ class LadybugEntityEdgeOperations(EntityEdgeOperations):
             MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m:Entity)
             WHERE e.uuid IN $uuids
             RETURN
-            """ + get_entity_edge_return_query(GraphProvider.KUZU)
+            """ + get_entity_edge_return_query(GraphProvider.LADYBUG)
         records, _, _ = await executor.execute_query(query, uuids=uuids)
         return [parse_ladybug_entity_edge(r) for r in records]
 
@@ -151,7 +151,7 @@ class LadybugEntityEdgeOperations(EntityEdgeOperations):
             + """
             RETURN
             """
-            + get_entity_edge_return_query(GraphProvider.KUZU)
+            + get_entity_edge_return_query(GraphProvider.LADYBUG)
             + """
             ORDER BY e.uuid DESC
             """
@@ -174,7 +174,7 @@ class LadybugEntityEdgeOperations(EntityEdgeOperations):
         query = """
             MATCH (n:Entity {uuid: $source_node_uuid})-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m:Entity {uuid: $target_node_uuid})
             RETURN
-            """ + get_entity_edge_return_query(GraphProvider.KUZU)
+            """ + get_entity_edge_return_query(GraphProvider.LADYBUG)
         records, _, _ = await executor.execute_query(
             query,
             source_node_uuid=source_node_uuid,
@@ -190,7 +190,7 @@ class LadybugEntityEdgeOperations(EntityEdgeOperations):
         query = """
             MATCH (n:Entity {uuid: $node_uuid})-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m:Entity)
             RETURN
-            """ + get_entity_edge_return_query(GraphProvider.KUZU)
+            """ + get_entity_edge_return_query(GraphProvider.LADYBUG)
         records, _, _ = await executor.execute_query(query, node_uuid=node_uuid)
         return [parse_ladybug_entity_edge(r) for r in records]
 

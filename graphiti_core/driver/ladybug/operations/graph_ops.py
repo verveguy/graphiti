@@ -65,8 +65,8 @@ class LadybugGraphMaintenanceOperations(GraphMaintenanceOperations):
 
         # LadybugDB schema is static (created in setup_schema), so range indices
         # return an empty list. Only FTS indices need to be created here.
-        range_indices = get_range_indices(GraphProvider.KUZU)
-        fulltext_indices = get_fulltext_indices(GraphProvider.KUZU)
+        range_indices = get_range_indices(GraphProvider.LADYBUG)
+        fulltext_indices = get_fulltext_indices(GraphProvider.LADYBUG)
         index_queries = range_indices + fulltext_indices
 
         await semaphore_gather(*[executor.execute_query(q) for q in index_queries])
@@ -107,7 +107,7 @@ class LadybugGraphMaintenanceOperations(GraphMaintenanceOperations):
                 WHERE n.group_id IN $group_ids
                 RETURN
                 """
-                + get_entity_node_return_query(GraphProvider.KUZU),
+                + get_entity_node_return_query(GraphProvider.LADYBUG),
                 group_ids=[group_id],
             )
             nodes = [parse_ladybug_entity_node(r) for r in node_records]
@@ -143,7 +143,7 @@ class LadybugGraphMaintenanceOperations(GraphMaintenanceOperations):
                     WHERE n.uuid IN $uuids
                     RETURN
                     """
-                    + get_entity_node_return_query(GraphProvider.KUZU),
+                    + get_entity_node_return_query(GraphProvider.LADYBUG),
                     uuids=cluster,
                 )
                 community_clusters.append([parse_ladybug_entity_node(r) for r in cluster_records])
@@ -203,7 +203,7 @@ class LadybugGraphMaintenanceOperations(GraphMaintenanceOperations):
             WHERE episode.uuid IN $uuids
             RETURN DISTINCT
             """
-            + get_entity_node_return_query(GraphProvider.KUZU),
+            + get_entity_node_return_query(GraphProvider.LADYBUG),
             uuids=episode_uuids,
         )
 

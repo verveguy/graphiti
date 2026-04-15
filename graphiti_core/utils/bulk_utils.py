@@ -183,7 +183,7 @@ async def add_nodes_and_edges_bulk_tx(
             'labels': list(set(node.labels + ['Entity'])),
         }
 
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             attributes = convert_datetimes_to_strings(node.attributes) if node.attributes else {}
             entity_data['attributes'] = json.dumps(attributes)
         else:
@@ -210,7 +210,7 @@ async def add_nodes_and_edges_bulk_tx(
             'fact_embedding': edge.fact_embedding,
         }
 
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             attributes = convert_datetimes_to_strings(edge.attributes) if edge.attributes else {}
             edge_data['attributes'] = json.dumps(attributes)
         else:
@@ -226,7 +226,7 @@ async def add_nodes_and_edges_bulk_tx(
         )
         await driver.graph_operations_interface.edge_save_bulk(None, driver, tx, edges)
 
-    elif driver.provider == GraphProvider.KUZU:
+    elif driver.provider == GraphProvider.LADYBUG:
         # FIXME: Kuzu's UNWIND does not currently support STRUCT[] type properly, so we insert the data one by one instead for now.
         for episode in episodes:
             await hnsw_safe_save_episode_node(driver, tx, episode)

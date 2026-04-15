@@ -48,7 +48,7 @@ class LadybugCommunityEdgeOperations(CommunityEdgeOperations):
         edge: CommunityEdge,
         tx: Transaction | None = None,
     ) -> None:
-        query = get_community_edge_save_query(GraphProvider.KUZU)
+        query = get_community_edge_save_query(GraphProvider.LADYBUG)
         params: dict[str, Any] = {
             'community_uuid': edge.source_node_uuid,
             'entity_uuid': edge.target_node_uuid,

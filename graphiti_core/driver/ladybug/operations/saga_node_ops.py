@@ -44,7 +44,7 @@ class LadybugSagaNodeOperations(SagaNodeOperations):
         node: SagaNode,
         tx: Transaction | None = None,
     ) -> None:
-        query = get_saga_node_save_query(GraphProvider.KUZU)
+        query = get_saga_node_save_query(GraphProvider.LADYBUG)
         params: dict[str, Any] = {
             'uuid': node.uuid,
             'name': node.name,

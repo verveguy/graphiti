@@ -71,7 +71,7 @@ class LadybugEpisodicEdgeOperations(EpisodicEdgeOperations):
         batch_size: int = 100,
     ) -> None:
         # LadybugDB doesn't support UNWIND - iterate and save individually
-        query = get_episodic_edge_save_bulk_query(GraphProvider.KUZU)
+        query = get_episodic_edge_save_bulk_query(GraphProvider.LADYBUG)
         for edge in edges:
             params: dict[str, Any] = {
                 'source_node_uuid': edge.source_node_uuid,

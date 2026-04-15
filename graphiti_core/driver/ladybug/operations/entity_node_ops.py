@@ -146,7 +146,7 @@ class LadybugEntityNodeOperations(EntityNodeOperations):
         query = """
             MATCH (n:Entity {uuid: $uuid})
             RETURN
-            """ + get_entity_node_return_query(GraphProvider.KUZU)
+            """ + get_entity_node_return_query(GraphProvider.LADYBUG)
         records, _, _ = await executor.execute_query(query, uuid=uuid)
         nodes = [parse_ladybug_entity_node(r) for r in records]
         if len(nodes) == 0:
@@ -162,7 +162,7 @@ class LadybugEntityNodeOperations(EntityNodeOperations):
             MATCH (n:Entity)
             WHERE n.uuid IN $uuids
             RETURN
-            """ + get_entity_node_return_query(GraphProvider.KUZU)
+            """ + get_entity_node_return_query(GraphProvider.LADYBUG)
         records, _, _ = await executor.execute_query(query, uuids=uuids)
         return [parse_ladybug_entity_node(r) for r in records]
 
@@ -184,7 +184,7 @@ class LadybugEntityNodeOperations(EntityNodeOperations):
             + """
             RETURN
             """
-            + get_entity_node_return_query(GraphProvider.KUZU)
+            + get_entity_node_return_query(GraphProvider.LADYBUG)
             + """
             ORDER BY n.uuid DESC
             """

@@ -18,7 +18,7 @@ NEO4J_TO_FALKORDB_MAPPING = {
     'edge_name_and_fact': 'RELATES_TO',
 }
 # Mapping from fulltext index names to Kuzu node labels
-INDEX_TO_LABEL_KUZU_MAPPING = {
+INDEX_TO_LABEL_LADYBUG_MAPPING = {
     'node_name_and_summary': 'Entity',
     'community_name': 'Community',
     'episode_content': 'Episodic',
@@ -49,7 +49,7 @@ def get_range_indices(provider: GraphProvider) -> list[LiteralString]:
             'CREATE INDEX FOR ()-[e:NEXT_EPISODE]-() ON (e.uuid, e.group_id)',
         ]
 
-    if provider == GraphProvider.KUZU:
+    if provider == GraphProvider.LADYBUG:
         return []
 
     return [
@@ -121,7 +121,7 @@ def get_fulltext_indices(provider: GraphProvider) -> list[LiteralString]:
             ],
         )
 
-    if provider == GraphProvider.KUZU:
+    if provider == GraphProvider.LADYBUG:
         return [
             "CALL CREATE_FTS_INDEX('Episodic', 'episode_content', ['content', 'source', 'source_description']);",
             "CALL CREATE_FTS_INDEX('Entity', 'node_name_and_summary', ['name', 'summary']);",
@@ -160,7 +160,7 @@ def get_vector_indices(provider: GraphProvider) -> list[LiteralString]:
             ],
         )
 
-    if provider == GraphProvider.KUZU:
+    if provider == GraphProvider.LADYBUG:
         from typing import cast
 
         return cast(
@@ -181,8 +181,8 @@ def get_nodes_query(name: str, query: str, limit: int, provider: GraphProvider) 
         label = NEO4J_TO_FALKORDB_MAPPING[name]
         return f"CALL db.idx.fulltext.queryNodes('{label}', {query})"
 
-    if provider == GraphProvider.KUZU:
-        label = INDEX_TO_LABEL_KUZU_MAPPING[name]
+    if provider == GraphProvider.LADYBUG:
+        label = INDEX_TO_LABEL_LADYBUG_MAPPING[name]
         return f"CALL QUERY_FTS_INDEX('{label}', '{name}', {query}, TOP := $limit)"
 
     return f'CALL db.index.fulltext.queryNodes("{name}", {query}, {{limit: $limit}})'
@@ -193,7 +193,7 @@ def get_vector_cosine_func_query(vec1, vec2, provider: GraphProvider) -> str:
         # FalkorDB uses a different syntax for regular cosine similarity and Neo4j uses normalized cosine similarity
         return f'(2 - vec.cosineDistance({vec1}, vecf32({vec2})))/2'
 
-    if provider == GraphProvider.KUZU:
+    if provider == GraphProvider.LADYBUG:
         return f'array_cosine_similarity({vec1}, {vec2})'
 
     return f'vector.similarity.cosine({vec1}, {vec2})'
@@ -204,8 +204,8 @@ def get_relationships_query(name: str, limit: int, provider: GraphProvider) -> s
         label = NEO4J_TO_FALKORDB_MAPPING[name]
         return f"CALL db.idx.fulltext.queryRelationships('{label}', $query)"
 
-    if provider == GraphProvider.KUZU:
-        label = INDEX_TO_LABEL_KUZU_MAPPING[name]
+    if provider == GraphProvider.LADYBUG:
+        label = INDEX_TO_LABEL_LADYBUG_MAPPING[name]
         return f"CALL QUERY_FTS_INDEX('{label}', '{name}', cast($query AS STRING), TOP := $limit)"
 
     return f'CALL db.index.fulltext.queryRelationships("{name}", $query, {{limit: $limit}})'
