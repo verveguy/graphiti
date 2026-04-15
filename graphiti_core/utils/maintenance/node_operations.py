@@ -264,18 +264,6 @@ def _create_entity_nodes(
     return extracted_nodes
 
 
-def _sanitize_label(label: str) -> str:
-    """Sanitize a freeform entity type label for safe use as a graph database label.
-
-    Replaces spaces with underscores and strips non-alphanumeric characters
-    to prevent Cypher injection and invalid label syntax.
-    """
-    # Replace spaces with underscores, then keep only alphanumeric + underscore
-    sanitized = label.replace(' ', '_')
-    sanitized = ''.join(c for c in sanitized if c.isalnum() or c == '_')
-    return sanitized.strip('_') or 'Entity'
-
-
 def _create_entity_nodes_freeform(
     extracted_entities: list[ExtractedEntityFreeform],
     excluded_entity_types: list[str] | None,
