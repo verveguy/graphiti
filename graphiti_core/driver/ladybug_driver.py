@@ -288,8 +288,12 @@ class LadybugDriver(GraphDriver):
         # systemd/container shutdown budgets) because GC may never run, leaving
         # db.wal uncheckpointed and the database unreadable on next startup.
         # Both close() calls are synchronous and idempotent.
-        self.client.close()
-        self.db.close()
+        # Use try/finally so db.close() (WAL checkpoint) runs even if
+        # client.close() raises an unexpected exception.
+        try:
+            self.client.close()
+        finally:
+            self.db.close()
 
     async def rotate_wal(self) -> None:
         """Rotate the WAL file, closing the current tip file."""
