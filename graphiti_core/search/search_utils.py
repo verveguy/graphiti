@@ -38,6 +38,7 @@ from graphiti_core.helpers import (
     lucene_sanitize,
     normalize_l2,
     semaphore_gather,
+    validate_group_ids,
 )
 from graphiti_core.models.edges.edge_db_queries import get_entity_edge_return_query
 from graphiti_core.models.nodes.node_db_queries import (
@@ -324,6 +325,8 @@ def _vectorized_cosine_rank(
 
 
 def fulltext_query(query: str, group_ids: list[str] | None, driver: GraphDriver):
+    validate_group_ids(group_ids)
+
     if driver.provider == GraphProvider.KUZU:
         # Kuzu only supports simple queries.
         if len(query.split(' ')) > MAX_QUERY_LENGTH:
