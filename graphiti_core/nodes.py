@@ -30,7 +30,7 @@ from graphiti_core.driver.driver import (
     GraphDriver,
     GraphProvider,
 )
-from graphiti_core.driver.kuzu.hnsw_safe_writes import (
+from graphiti_core.driver.ladybug.hnsw_safe_writes import (
     hnsw_safe_save_community_node,
     hnsw_safe_save_entity_node,
     hnsw_safe_save_episode_node,
@@ -123,7 +123,7 @@ class Node(BaseModel, ABC):
                     uuid=self.uuid,
                 )
 
-            case GraphProvider.KUZU:
+            case GraphProvider.LADYBUG:
                 for label in ['Episodic', 'Community']:
                     await driver.execute_query(
                         f"""
@@ -132,7 +132,7 @@ class Node(BaseModel, ABC):
                         """,
                         uuid=self.uuid,
                     )
-                # Entity edges are actually nodes in Kuzu, so simple `DETACH DELETE` will not work.
+                # Entity edges are actually nodes in LadybugDB, so simple `DETACH DELETE` will not work.
                 # Explicitly delete the "edge" nodes first, then the entity node.
                 await driver.execute_query(
                     """
@@ -192,7 +192,7 @@ class Node(BaseModel, ABC):
                         batch_size=batch_size,
                     )
 
-            case GraphProvider.KUZU:
+            case GraphProvider.LADYBUG:
                 for label in ['Episodic', 'Community']:
                     await driver.execute_query(
                         f"""
@@ -201,7 +201,7 @@ class Node(BaseModel, ABC):
                         """,
                         group_id=group_id,
                     )
-                # Entity edges are actually nodes in Kuzu, so simple `DETACH DELETE` will not work.
+                # Entity edges are actually nodes in LadybugDB, so simple `DETACH DELETE` will not work.
                 # Explicitly delete the "edge" nodes first, then the entity node.
                 await driver.execute_query(
                     """
@@ -248,7 +248,7 @@ class Node(BaseModel, ABC):
                         """,
                         uuids=uuids,
                     )
-            case GraphProvider.KUZU:
+            case GraphProvider.LADYBUG:
                 for label in ['Episodic', 'Community']:
                     await driver.execute_query(
                         f"""
@@ -258,7 +258,7 @@ class Node(BaseModel, ABC):
                         """,
                         uuids=uuids,
                     )
-                # Entity edges are actually nodes in Kuzu, so simple `DETACH DELETE` will not work.
+                # Entity edges are actually nodes in LadybugDB, so simple `DETACH DELETE` will not work.
                 # Explicitly delete the "edge" nodes first, then the entity node.
                 await driver.execute_query(
                     """
@@ -345,7 +345,7 @@ class EpisodicNode(Node):
             'source': self.source.value,
         }
 
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             await hnsw_safe_save_episode_node(driver, None, episode_args)
             result = None
         else:
@@ -558,7 +558,7 @@ class EntityNode(Node):
             'created_at': self.created_at,
         }
 
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             entity_data['attributes'] = json.dumps(self.attributes)
             entity_data['labels'] = list(set(self.labels + ['Entity']))
             await hnsw_safe_save_entity_node(driver, None, entity_data)
@@ -693,7 +693,7 @@ class CommunityNode(Node):
                 'communities',
                 [{'name': self.name, 'uuid': self.uuid, 'group_id': self.group_id}],
             )
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             params: dict[str, Any] = {
                 'uuid': self.uuid,
                 'name': self.name,
@@ -1039,7 +1039,7 @@ def get_episodic_node_from_record(record: Any) -> EpisodicNode:
 
 
 def get_entity_node_from_record(record: Any, provider: GraphProvider) -> EntityNode:
-    if provider == GraphProvider.KUZU:
+    if provider == GraphProvider.LADYBUG:
         attributes = json.loads(record['attributes']) if record['attributes'] else {}
     else:
         attributes = record['attributes']

@@ -20,7 +20,7 @@ import re
 #
 # Live writes from LadybugDriver against LadybugDB never emit vecf32()
 # (the provider-switched model queries in graphiti_core/models/ have a
-# KUZU branch that uses `$name_embedding` directly), so on pure
+# LADYBUG branch that uses `$name_embedding` directly), so on pure
 # LadybugDB-era WAL this substitution is a no-op.
 _VECF32_WRAPPER_RE = re.compile(
     r'\bvecf32\(\$([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\)'
@@ -40,7 +40,7 @@ def strip_vecf32_wrappers(cypher: str) -> str:
 # FalkorDB / Neo4j support bulk property set from a map parameter:
 #   SET n = $props
 # where $props is a dict like {"name": "...", "content": "...", ...}.
-# KuzuDB (LadybugDB) does not support this syntax — it requires
+# LadybugDB does not support this syntax — it requires
 # individual property assignments:
 #   SET n.name = $name, n.content = $content, ...
 #
@@ -59,7 +59,7 @@ def expand_bulk_property_set(
     """Expand `SET n = $props` into individual property assignments.
 
     FalkorDB-era WAL entries use Neo4j's bulk property set syntax where
-    a single dict parameter sets all properties at once. KuzuDB does not
+    a single dict parameter sets all properties at once. LadybugDB does not
     support this — it needs `SET n.field1 = $field1, n.field2 = $field2`.
 
     This function:
