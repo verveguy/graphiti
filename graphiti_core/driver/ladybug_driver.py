@@ -281,6 +281,15 @@ class LadybugDriver(GraphDriver):
     async def close(self):
         if self._wal is not None and self._wal_owner:
             await self._wal.close()
+        # Explicitly close the AsyncConnection before the Database so that all
+        # in-flight queries are drained and Kuzu's WAL is checkpointed into the
+        # main database file before the process exits.  Relying on GC is unsafe
+        # under SIGTERM → SIGKILL escalations with short timeouts (e.g. 5 s
+        # systemd/container shutdown budgets) because GC may never run, leaving
+        # db.wal uncheckpointed and the database unreadable on next startup.
+        # Both close() calls are synchronous and idempotent.
+        self.client.close()
+        self.db.close()
 
     async def rotate_wal(self) -> None:
         """Rotate the WAL file, closing the current tip file."""
