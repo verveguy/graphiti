@@ -308,6 +308,13 @@ class FalkorDriver(GraphDriver):
         if self._wal is not None and self._wal_owner:
             await self._wal.close()
 
+        if hasattr(self.client, 'aclose'):
+            await self.client.aclose()  # type: ignore[reportUnknownMemberType]
+        elif hasattr(self.client.connection, 'aclose'):
+            await self.client.connection.aclose()
+        elif hasattr(self.client.connection, 'close'):
+            await self.client.connection.close()
+
     async def rotate_wal(self) -> None:
         """Rotate the WAL file, closing the current tip file.
 
@@ -315,13 +322,6 @@ class FalkorDriver(GraphDriver):
         """
         if self._wal is not None:
             await self._wal.rotate()
-
-        if hasattr(self.client, 'aclose'):
-            await self.client.aclose()  # type: ignore[reportUnknownMemberType]
-        elif hasattr(self.client.connection, 'aclose'):
-            await self.client.connection.aclose()
-        elif hasattr(self.client.connection, 'close'):
-            await self.client.connection.close()
 
     async def delete_all_indexes(self) -> None:
         result = await self.execute_query('CALL db.indexes()')
