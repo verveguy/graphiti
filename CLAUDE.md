@@ -128,6 +128,7 @@ docker-compose up
 - Run specific test methods: `pytest tests/test_file.py::test_method_name`
 - Run only integration tests: `pytest tests/ -k "_int"`
 - Run only unit tests: `pytest tests/ -k "not _int"`
+- `make test` enforces a 60-second per-test timeout via `pytest-timeout`; tests that legitimately need more time should be annotated with `@pytest.mark.timeout(N)`
 
 ### LLM Provider Support
 
