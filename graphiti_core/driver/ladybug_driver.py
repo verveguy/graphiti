@@ -149,7 +149,6 @@ def _fix_record_timestamps(record: dict[str, Any]) -> dict[str, Any]:
 
 class LadybugDriver(GraphDriver):
     # Provider identity for LadybugDB
-    
     provider: GraphProvider = GraphProvider.LADYBUG
     aoss_client: None = None
 
