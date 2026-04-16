@@ -1,4 +1,4 @@
-"""HNSW-safe write helpers for LadybugDB/LadybugDB.
+"""HNSW-safe write helpers for LadybugDB.
 
 LadybugDB does not allow SET on columns that have HNSW vector indexes.
 These helpers replace the MERGE+SET pattern with DELETE+INSERT,
