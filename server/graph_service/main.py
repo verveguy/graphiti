@@ -12,8 +12,10 @@ from graph_service.zep_graphiti import initialize_graphiti
 async def lifespan(_: FastAPI):
     settings = get_settings()
     graphiti_client = await initialize_graphiti(settings)
-    yield
-    await graphiti_client.close()
+    try:
+        yield
+    finally:
+        await graphiti_client.close()
 
 
 app = FastAPI(lifespan=lifespan)

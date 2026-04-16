@@ -96,7 +96,11 @@ async def initialize_graphiti(settings: ZepEnvDep) -> ZepGraphiti:
         user=settings.neo4j_user,
         password=settings.neo4j_password,
     )
-    await client.build_indices_and_constraints()
+    try:
+        await client.build_indices_and_constraints()
+    except Exception:
+        await client.close()
+        raise
     return client
 
 
