@@ -18,7 +18,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from graphiti_core.driver.kuzu.hnsw_safe_writes import hnsw_safe_save_episode_node
+from graphiti_core.driver.ladybug.hnsw_safe_writes import hnsw_safe_save_episode_node
 from graphiti_core.driver.operations.episode_node_ops import EpisodeNodeOperations
 from graphiti_core.driver.query_executor import QueryExecutor, Transaction
 from graphiti_core.driver.record_parsers import episodic_node_from_record
@@ -29,7 +29,7 @@ from graphiti_core.nodes import EpisodicNode
 logger = logging.getLogger(__name__)
 
 
-class KuzuEpisodeNodeOperations(EpisodeNodeOperations):
+class LadybugEpisodeNodeOperations(EpisodeNodeOperations):
     async def save(
         self,
         executor: QueryExecutor,
@@ -59,7 +59,7 @@ class KuzuEpisodeNodeOperations(EpisodeNodeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support UNWIND - iterate and save individually
+        # LadybugDB doesn't support UNWIND - iterate and save individually
         for node in nodes:
             await self.save(executor, node, tx=tx)
 
@@ -87,7 +87,7 @@ class KuzuEpisodeNodeOperations(EpisodeNodeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support IN TRANSACTIONS OF - simple delete
+        # LadybugDB doesn't support IN TRANSACTIONS OF - simple delete
         query = """
             MATCH (n:Episodic {group_id: $group_id})
             DETACH DELETE n
@@ -104,7 +104,7 @@ class KuzuEpisodeNodeOperations(EpisodeNodeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support IN TRANSACTIONS OF - simple delete
+        # LadybugDB doesn't support IN TRANSACTIONS OF - simple delete
         query = """
             MATCH (n:Episodic)
             WHERE n.uuid IN $uuids

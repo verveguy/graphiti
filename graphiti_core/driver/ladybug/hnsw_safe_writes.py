@@ -1,6 +1,6 @@
-"""HNSW-safe write helpers for KuzuDB/LadybugDB.
+"""HNSW-safe write helpers for LadybugDB/LadybugDB.
 
-KuzuDB does not allow SET on columns that have HNSW vector indexes.
+LadybugDB does not allow SET on columns that have HNSW vector indexes.
 These helpers replace the MERGE+SET pattern with DELETE+INSERT,
 preserving relationships across the delete-create cycle.
 """
@@ -21,7 +21,7 @@ async def _query(
     query: str,
     **kwargs: Any,
 ) -> list[dict[str, Any]]:
-    # Always uses executor (not tx) because KuzuDB tx.run() doesn't return results.
+    # Always uses executor (not tx) because LadybugDB tx.run() doesn't return results.
     records, _, _ = await executor.execute_query(query, **kwargs)
     return records  # type: ignore
 
