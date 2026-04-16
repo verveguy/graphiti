@@ -17,28 +17,26 @@ limitations under the License.
 import logging
 from typing import Any
 
-from graphiti_core.driver.driver import GraphProvider
+from graphiti_core.driver.ladybug.hnsw_safe_writes import hnsw_safe_save_community_node
 from graphiti_core.driver.operations.community_node_ops import CommunityNodeOperations
 from graphiti_core.driver.query_executor import QueryExecutor, Transaction
 from graphiti_core.driver.record_parsers import community_node_from_record
 from graphiti_core.errors import NodeNotFoundError
 from graphiti_core.models.nodes.node_db_queries import (
     COMMUNITY_NODE_RETURN,
-    get_community_node_save_query,
 )
 from graphiti_core.nodes import CommunityNode
 
 logger = logging.getLogger(__name__)
 
 
-class KuzuCommunityNodeOperations(CommunityNodeOperations):
+class LadybugCommunityNodeOperations(CommunityNodeOperations):
     async def save(
         self,
         executor: QueryExecutor,
         node: CommunityNode,
         tx: Transaction | None = None,
     ) -> None:
-        query = get_community_node_save_query(GraphProvider.KUZU)
         params: dict[str, Any] = {
             'uuid': node.uuid,
             'name': node.name,
@@ -47,10 +45,7 @@ class KuzuCommunityNodeOperations(CommunityNodeOperations):
             'name_embedding': node.name_embedding,
             'created_at': node.created_at,
         }
-        if tx is not None:
-            await tx.run(query, **params)
-        else:
-            await executor.execute_query(query, **params)
+        await hnsw_safe_save_community_node(executor, tx, params)
 
         logger.debug(f'Saved Community Node to Graph: {node.uuid}')
 
@@ -61,7 +56,7 @@ class KuzuCommunityNodeOperations(CommunityNodeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support UNWIND - iterate and save individually
+        # LadybugDB doesn't support UNWIND - iterate and save individually
         for node in nodes:
             await self.save(executor, node, tx=tx)
 
@@ -89,7 +84,7 @@ class KuzuCommunityNodeOperations(CommunityNodeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support IN TRANSACTIONS OF - simple delete
+        # LadybugDB doesn't support IN TRANSACTIONS OF - simple delete
         query = """
             MATCH (n:Community {group_id: $group_id})
             DETACH DELETE n
@@ -106,7 +101,7 @@ class KuzuCommunityNodeOperations(CommunityNodeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support IN TRANSACTIONS OF - simple delete
+        # LadybugDB doesn't support IN TRANSACTIONS OF - simple delete
         query = """
             MATCH (n:Community)
             WHERE n.uuid IN $uuids

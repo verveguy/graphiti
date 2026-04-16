@@ -37,7 +37,7 @@ def get_episode_node_save_query(provider: GraphProvider) -> str:
                 content_embedding: join([x IN coalesce($content_embedding, []) | toString(x) ], ',')}
                 RETURN n.uuid AS uuid
             """
-        case GraphProvider.KUZU:
+        case GraphProvider.LADYBUG:
             return """
                 MERGE (n:Episodic {uuid: $uuid})
                 SET
@@ -82,7 +82,7 @@ def get_episode_node_save_bulk_query(provider: GraphProvider) -> str:
                 content_embedding: join([x IN coalesce(episode.content_embedding, []) | toString(x) ], ',')}
                 RETURN n.uuid AS uuid
             """
-        case GraphProvider.KUZU:
+        case GraphProvider.LADYBUG:
             return """
                 MERGE (n:Episodic {uuid: $uuid})
                 SET
@@ -156,7 +156,7 @@ def get_entity_node_save_query(provider: GraphProvider, labels: str, has_aoss: b
                 SET n.name_embedding = vecf32($entity_data.name_embedding)
                 RETURN n.uuid AS uuid
             """
-        case GraphProvider.KUZU:
+        case GraphProvider.LADYBUG:
             return """
                 MERGE (n:Entity {uuid: $uuid})
                 SET
@@ -243,7 +243,7 @@ def get_entity_node_save_bulk_query(
                     """
                 )
             return queries
-        case GraphProvider.KUZU:
+        case GraphProvider.LADYBUG:
             return """
                 MERGE (n:Entity {uuid: $uuid})
                 SET
@@ -278,7 +278,7 @@ def get_entity_node_save_bulk_query(
 
 def get_entity_node_return_query(provider: GraphProvider) -> str:
     # `name_embedding` is not returned by default and must be loaded manually using `load_name_embedding()`.
-    if provider == GraphProvider.KUZU:
+    if provider == GraphProvider.LADYBUG:
         return """
             n.uuid AS uuid,
             n.name AS name,
@@ -315,7 +315,7 @@ def get_community_node_save_query(provider: GraphProvider) -> str:
                 SET n.name_embedding = join([x IN coalesce($name_embedding, []) | toString(x) ], ",")
                 RETURN n.uuid AS uuid
             """
-        case GraphProvider.KUZU:
+        case GraphProvider.LADYBUG:
             return """
                 MERGE (n:Community {uuid: $uuid})
                 SET
@@ -356,7 +356,7 @@ COMMUNITY_NODE_RETURN_NEPTUNE = """
 
 def get_saga_node_save_query(provider: GraphProvider) -> str:
     match provider:
-        case GraphProvider.KUZU:
+        case GraphProvider.LADYBUG:
             return """
                 MERGE (n:Saga {uuid: $uuid})
                 SET

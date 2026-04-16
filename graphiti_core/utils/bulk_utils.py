@@ -28,6 +28,11 @@ from graphiti_core.driver.driver import (
     GraphDriverSession,
     GraphProvider,
 )
+from graphiti_core.driver.ladybug.hnsw_safe_writes import (
+    hnsw_safe_save_entity_edge,
+    hnsw_safe_save_entity_node,
+    hnsw_safe_save_episode_node,
+)
 from graphiti_core.edges import Edge, EntityEdge, EpisodicEdge, create_entity_edge_embeddings
 from graphiti_core.embedder import EmbedderClient
 from graphiti_core.graphiti_types import GraphitiClients
@@ -178,7 +183,7 @@ async def add_nodes_and_edges_bulk_tx(
             'labels': list(set(node.labels + ['Entity'])),
         }
 
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             attributes = convert_datetimes_to_strings(node.attributes) if node.attributes else {}
             entity_data['attributes'] = json.dumps(attributes)
         else:
@@ -205,7 +210,7 @@ async def add_nodes_and_edges_bulk_tx(
             'fact_embedding': edge.fact_embedding,
         }
 
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             attributes = convert_datetimes_to_strings(edge.attributes) if edge.attributes else {}
             edge_data['attributes'] = json.dumps(attributes)
         else:
@@ -221,17 +226,14 @@ async def add_nodes_and_edges_bulk_tx(
         )
         await driver.graph_operations_interface.edge_save_bulk(None, driver, tx, edges)
 
-    elif driver.provider == GraphProvider.KUZU:
-        # FIXME: Kuzu's UNWIND does not currently support STRUCT[] type properly, so we insert the data one by one instead for now.
-        episode_query = get_episode_node_save_bulk_query(driver.provider)
+    elif driver.provider == GraphProvider.LADYBUG:
+        # FIXME: LadybugDB's UNWIND does not currently support STRUCT[] type properly, so we insert the data one by one instead for now.
         for episode in episodes:
-            await tx.run(episode_query, **episode)
-        entity_node_query = get_entity_node_save_bulk_query(driver.provider, nodes)
+            await hnsw_safe_save_episode_node(driver, tx, episode)
         for node in nodes:
-            await tx.run(entity_node_query, **node)
-        entity_edge_query = get_entity_edge_save_bulk_query(driver.provider)
+            await hnsw_safe_save_entity_node(driver, tx, node)
         for edge in edges:
-            await tx.run(entity_edge_query, **edge)
+            await hnsw_safe_save_entity_edge(driver, tx, edge)
         episodic_edge_query = get_episodic_edge_save_bulk_query(driver.provider)
         for edge in episodic_edges:
             await tx.run(episodic_edge_query, **edge.model_dump())

@@ -90,13 +90,18 @@ async def get_graphiti(settings: ZepEnvDep):
         await client.close()
 
 
-async def initialize_graphiti(settings: ZepEnvDep):
+async def initialize_graphiti(settings: ZepEnvDep) -> ZepGraphiti:
     client = ZepGraphiti(
         uri=settings.neo4j_uri,
         user=settings.neo4j_user,
         password=settings.neo4j_password,
     )
-    await client.build_indices_and_constraints()
+    try:
+        await client.build_indices_and_constraints()
+    except Exception:
+        await client.close()
+        raise
+    return client
 
 
 def get_fact_result_from_edge(edge: EntityEdge):

@@ -1,4 +1,4 @@
-"""Tests for Kuzu HNSW vector index search branches in search_utils.py."""
+"""Tests for LadybugDB HNSW vector index search branches in search_utils.py."""
 
 from unittest.mock import AsyncMock, PropertyMock
 
@@ -14,16 +14,16 @@ from graphiti_core.search.search_utils import (
 )
 
 
-def _make_kuzu_driver():
-    """Create a mock GraphDriver configured as Kuzu."""
+def _make_ladybug_driver():
+    """Create a mock GraphDriver configured as LadybugDB."""
     driver = AsyncMock()
-    type(driver).provider = PropertyMock(return_value=GraphProvider.KUZU)
+    type(driver).provider = PropertyMock(return_value=GraphProvider.LADYBUG)
     driver.search_interface = None
     return driver
 
 
 def _make_node_record():
-    """Create a mock node record matching get_entity_node_return_query (Kuzu) output."""
+    """Create a mock node record matching get_entity_node_return_query (LadybugDB) output."""
     return {
         'uuid': 'node-1',
         'group_id': 'group-1',
@@ -35,13 +35,13 @@ def _make_node_record():
     }
 
 
-class TestKuzuNodeSimilaritySearch:
-    """Tests for Kuzu HNSW branch in node_similarity_search."""
+class TestLadybugNodeSimilaritySearch:
+    """Tests for LadybugDB HNSW branch in node_similarity_search."""
 
     @pytest.mark.asyncio
     async def test_uses_hnsw_vector_index_query(self):
-        """Test that Kuzu branch uses QUERY_VECTOR_INDEX for Entity."""
-        driver = _make_kuzu_driver()
+        """Test that LadybugDB branch uses QUERY_VECTOR_INDEX for Entity."""
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([_make_node_record()], ['uuid'], None)
 
         search_vector = [0.1] * 768
@@ -62,7 +62,7 @@ class TestKuzuNodeSimilaritySearch:
     @pytest.mark.asyncio
     async def test_converts_distance_to_similarity(self):
         """Test that the query converts distance to similarity via (1.0 - distance)."""
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         search_vector = [0.1] * 768
@@ -78,7 +78,7 @@ class TestKuzuNodeSimilaritySearch:
     @pytest.mark.asyncio
     async def test_over_fetches_for_post_filtering(self):
         """Test that the over-fetch limit (10x) is passed."""
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         search_vector = [0.1] * 768
@@ -96,7 +96,7 @@ class TestKuzuNodeSimilaritySearch:
     @pytest.mark.asyncio
     async def test_applies_group_id_filter(self):
         """Test that group_id filter is applied as a post-filter."""
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         search_vector = [0.1] * 768
@@ -113,7 +113,7 @@ class TestKuzuNodeSimilaritySearch:
     @pytest.mark.asyncio
     async def test_applies_min_score_filter(self):
         """Test that min_score filter is included in the query."""
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         search_vector = [0.1] * 768
@@ -132,7 +132,7 @@ class TestKuzuNodeSimilaritySearch:
     @pytest.mark.asyncio
     async def test_casts_search_vector_with_dimension(self):
         """Test that the search vector is CAST to the correct FLOAT[N] dimension."""
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         search_vector = [0.1] * 768
@@ -148,7 +148,7 @@ class TestKuzuNodeSimilaritySearch:
     @pytest.mark.asyncio
     async def test_falls_back_to_brute_force_on_error(self):
         """Test that HNSW failure falls back to array_cosine_similarity brute-force."""
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         # First call (HNSW) raises, second call (brute-force) succeeds
         driver.execute_query.side_effect = [
             RuntimeError('index not found'),
@@ -173,7 +173,7 @@ class TestKuzuNodeSimilaritySearch:
     @pytest.mark.asyncio
     async def test_returns_empty_list_on_no_results(self):
         """Test that empty results are handled correctly."""
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         search_vector = [0.1] * 768
@@ -186,13 +186,13 @@ class TestKuzuNodeSimilaritySearch:
         assert results == []
 
 
-class TestKuzuEdgeSimilaritySearch:
-    """Tests for Kuzu HNSW branch in edge_similarity_search."""
+class TestLadybugEdgeSimilaritySearch:
+    """Tests for LadybugDB HNSW branch in edge_similarity_search."""
 
     @pytest.mark.asyncio
     async def test_uses_hnsw_vector_index_query(self):
-        """Test that Kuzu branch uses QUERY_VECTOR_INDEX for RelatesToNode_."""
-        driver = _make_kuzu_driver()
+        """Test that LadybugDB branch uses QUERY_VECTOR_INDEX for RelatesToNode_."""
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         search_vector = [0.1] * 768
@@ -213,7 +213,7 @@ class TestKuzuEdgeSimilaritySearch:
 
     @pytest.mark.asyncio
     async def test_converts_distance_to_similarity(self):
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         await edge_similarity_search(
@@ -229,7 +229,7 @@ class TestKuzuEdgeSimilaritySearch:
 
     @pytest.mark.asyncio
     async def test_casts_search_vector_with_dimension(self):
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         await edge_similarity_search(
@@ -245,7 +245,7 @@ class TestKuzuEdgeSimilaritySearch:
 
     @pytest.mark.asyncio
     async def test_falls_back_to_brute_force_on_error(self):
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.side_effect = [
             RuntimeError('index not found'),
             ([], [], None),
@@ -265,13 +265,13 @@ class TestKuzuEdgeSimilaritySearch:
         assert 'array_cosine_similarity' in fallback_query
 
 
-class TestKuzuCommunitySimilaritySearch:
-    """Tests for Kuzu HNSW branch in community_similarity_search."""
+class TestLadybugCommunitySimilaritySearch:
+    """Tests for LadybugDB HNSW branch in community_similarity_search."""
 
     @pytest.mark.asyncio
     async def test_uses_hnsw_vector_index_query(self):
-        """Test that Kuzu branch uses QUERY_VECTOR_INDEX for Community."""
-        driver = _make_kuzu_driver()
+        """Test that LadybugDB branch uses QUERY_VECTOR_INDEX for Community."""
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         search_vector = [0.1] * 768
@@ -289,7 +289,7 @@ class TestKuzuCommunitySimilaritySearch:
 
     @pytest.mark.asyncio
     async def test_converts_distance_to_similarity(self):
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         await community_similarity_search(driver, [0.1] * 768)
@@ -299,7 +299,7 @@ class TestKuzuCommunitySimilaritySearch:
 
     @pytest.mark.asyncio
     async def test_casts_search_vector_with_dimension(self):
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         await community_similarity_search(driver, [0.1] * 768)
@@ -309,7 +309,7 @@ class TestKuzuCommunitySimilaritySearch:
 
     @pytest.mark.asyncio
     async def test_applies_group_id_filter(self):
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         await community_similarity_search(
@@ -323,7 +323,7 @@ class TestKuzuCommunitySimilaritySearch:
 
     @pytest.mark.asyncio
     async def test_over_fetches_for_post_filtering(self):
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         await community_similarity_search(
@@ -337,7 +337,7 @@ class TestKuzuCommunitySimilaritySearch:
 
     @pytest.mark.asyncio
     async def test_falls_back_to_brute_force_on_error(self):
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.side_effect = [
             RuntimeError('index not found'),
             ([], [], None),
@@ -355,13 +355,13 @@ class TestKuzuCommunitySimilaritySearch:
         assert 'array_cosine_similarity' in fallback_query
 
 
-class TestKuzuEpisodeSimilaritySearch:
-    """Tests for Kuzu HNSW branch in episode_similarity_search."""
+class TestLadybugEpisodeSimilaritySearch:
+    """Tests for LadybugDB HNSW branch in episode_similarity_search."""
 
     @pytest.mark.asyncio
     async def test_uses_hnsw_vector_index_query(self):
-        """Test that Kuzu branch uses QUERY_VECTOR_INDEX for Episodic."""
-        driver = _make_kuzu_driver()
+        """Test that LadybugDB branch uses QUERY_VECTOR_INDEX for Episodic."""
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         await episode_similarity_search(
@@ -378,7 +378,7 @@ class TestKuzuEpisodeSimilaritySearch:
 
     @pytest.mark.asyncio
     async def test_converts_distance_to_similarity(self):
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         await episode_similarity_search(driver, [0.1] * 768, group_ids=None)
@@ -388,7 +388,7 @@ class TestKuzuEpisodeSimilaritySearch:
 
     @pytest.mark.asyncio
     async def test_casts_search_vector_with_dimension(self):
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
         await episode_similarity_search(driver, [0.1] * 768, group_ids=None)
@@ -398,7 +398,7 @@ class TestKuzuEpisodeSimilaritySearch:
 
     @pytest.mark.asyncio
     async def test_falls_back_to_brute_force_on_error(self):
-        driver = _make_kuzu_driver()
+        driver = _make_ladybug_driver()
         driver.execute_query.side_effect = [
             RuntimeError('index not found'),
             ([], [], None),

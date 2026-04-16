@@ -19,27 +19,27 @@ import logging
 from typing import Any
 
 from graphiti_core.driver.driver import GraphProvider
-from graphiti_core.driver.kuzu.operations.record_parsers import parse_kuzu_entity_node
+from graphiti_core.driver.ladybug.hnsw_safe_writes import hnsw_safe_save_entity_node
+from graphiti_core.driver.ladybug.operations.record_parsers import parse_ladybug_entity_node
 from graphiti_core.driver.operations.entity_node_ops import EntityNodeOperations
 from graphiti_core.driver.query_executor import QueryExecutor, Transaction
 from graphiti_core.errors import NodeNotFoundError
 from graphiti_core.models.nodes.node_db_queries import (
     get_entity_node_return_query,
-    get_entity_node_save_query,
 )
 from graphiti_core.nodes import EntityNode
 
 logger = logging.getLogger(__name__)
 
 
-class KuzuEntityNodeOperations(EntityNodeOperations):
+class LadybugEntityNodeOperations(EntityNodeOperations):
     async def save(
         self,
         executor: QueryExecutor,
         node: EntityNode,
         tx: Transaction | None = None,
     ) -> None:
-        # Kuzu uses individual SET per property, attributes serialized as JSON
+        # LadybugDB uses individual SET per property, attributes serialized as JSON
         attrs_json = json.dumps(node.attributes or {})
         params: dict[str, Any] = {
             'uuid': node.uuid,
@@ -52,12 +52,7 @@ class KuzuEntityNodeOperations(EntityNodeOperations):
             'attributes': attrs_json,
         }
 
-        query = get_entity_node_save_query(GraphProvider.KUZU, '')
-
-        if tx is not None:
-            await tx.run(query, **params)
-        else:
-            await executor.execute_query(query, **params)
+        await hnsw_safe_save_entity_node(executor, tx, params)
 
         logger.debug(f'Saved Node to Graph: {node.uuid}')
 
@@ -68,7 +63,7 @@ class KuzuEntityNodeOperations(EntityNodeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support UNWIND - iterate and save individually
+        # LadybugDB doesn't support UNWIND - iterate and save individually
         for node in nodes:
             await self.save(executor, node, tx=tx)
 
@@ -151,9 +146,9 @@ class KuzuEntityNodeOperations(EntityNodeOperations):
         query = """
             MATCH (n:Entity {uuid: $uuid})
             RETURN
-            """ + get_entity_node_return_query(GraphProvider.KUZU)
+            """ + get_entity_node_return_query(GraphProvider.LADYBUG)
         records, _, _ = await executor.execute_query(query, uuid=uuid)
-        nodes = [parse_kuzu_entity_node(r) for r in records]
+        nodes = [parse_ladybug_entity_node(r) for r in records]
         if len(nodes) == 0:
             raise NodeNotFoundError(uuid)
         return nodes[0]
@@ -167,9 +162,9 @@ class KuzuEntityNodeOperations(EntityNodeOperations):
             MATCH (n:Entity)
             WHERE n.uuid IN $uuids
             RETURN
-            """ + get_entity_node_return_query(GraphProvider.KUZU)
+            """ + get_entity_node_return_query(GraphProvider.LADYBUG)
         records, _, _ = await executor.execute_query(query, uuids=uuids)
-        return [parse_kuzu_entity_node(r) for r in records]
+        return [parse_ladybug_entity_node(r) for r in records]
 
     async def get_by_group_ids(
         self,
@@ -189,7 +184,7 @@ class KuzuEntityNodeOperations(EntityNodeOperations):
             + """
             RETURN
             """
-            + get_entity_node_return_query(GraphProvider.KUZU)
+            + get_entity_node_return_query(GraphProvider.LADYBUG)
             + """
             ORDER BY n.uuid DESC
             """
@@ -201,7 +196,7 @@ class KuzuEntityNodeOperations(EntityNodeOperations):
             uuid=uuid_cursor,
             limit=limit,
         )
-        return [parse_kuzu_entity_node(r) for r in records]
+        return [parse_ladybug_entity_node(r) for r in records]
 
     async def load_embeddings(
         self,

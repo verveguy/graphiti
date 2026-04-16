@@ -327,8 +327,8 @@ def _vectorized_cosine_rank(
 def fulltext_query(query: str, group_ids: list[str] | None, driver: GraphDriver):
     validate_group_ids(group_ids)
 
-    if driver.provider == GraphProvider.KUZU:
-        # Kuzu only supports simple queries.
+    if driver.provider == GraphProvider.LADYBUG:
+        # LadybugDB only supports simple queries.
         if len(query.split(' ')) > MAX_QUERY_LENGTH:
             return ''
         return query
@@ -447,7 +447,7 @@ async def edge_fulltext_search(
     YIELD relationship AS rel, score
     MATCH (n:Entity)-[e:RELATES_TO {uuid: rel.uuid}]->(m:Entity)
     """
-    if driver.provider == GraphProvider.KUZU:
+    if driver.provider == GraphProvider.LADYBUG:
         match_query = """
         YIELD node, score
         MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_ {uuid: node.uuid})-[:RELATES_TO]->(m:Entity)
@@ -595,7 +595,7 @@ async def edge_similarity_search(
     match_query = """
         MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity)
     """
-    if driver.provider == GraphProvider.KUZU:
+    if driver.provider == GraphProvider.LADYBUG:
         match_query = """
             MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m:Entity)
         """
@@ -621,7 +621,7 @@ async def edge_similarity_search(
         filter_query = ' WHERE ' + (' AND '.join(filter_queries))
 
     search_vector_var = '$search_vector'
-    if driver.provider == GraphProvider.KUZU:
+    if driver.provider == GraphProvider.LADYBUG:
         search_vector_var = f'CAST($search_vector AS FLOAT[{len(search_vector)}])'
 
     if driver.provider == GraphProvider.NEPTUNE:
@@ -756,7 +756,7 @@ async def edge_similarity_search(
                 'BRUTEFORCE_EDGE_SEARCH (cached): returning top %d',
                 len(records),
             )
-    elif driver.provider == GraphProvider.KUZU:
+    elif driver.provider == GraphProvider.LADYBUG:
         # Try HNSW vector index search first, fall back to brute-force on error.
         try:
             over_fetch_limit = limit * 10
@@ -894,8 +894,8 @@ async def edge_bfs_search(
     if filter_queries:
         filter_query = ' WHERE ' + (' AND '.join(filter_queries))
 
-    if driver.provider == GraphProvider.KUZU:
-        # Kuzu stores entity edges twice with an intermediate node, so we need to match them
+    if driver.provider == GraphProvider.LADYBUG:
+        # LadybugDB stores entity edges twice with an intermediate node, so we need to match them
         # separately for the correct BFS depth.
         depth = bfs_max_depth * 2 - 1
         match_queries = [
@@ -1024,7 +1024,7 @@ async def node_fulltext_search(
         filter_query = ' WHERE ' + (' AND '.join(filter_queries))
 
     yield_query = 'YIELD node AS n, score'
-    if driver.provider == GraphProvider.KUZU:
+    if driver.provider == GraphProvider.LADYBUG:
         yield_query = 'WITH node AS n, score'
 
     if driver.provider == GraphProvider.NEPTUNE:
@@ -1118,7 +1118,7 @@ async def node_similarity_search(
         filter_query = ' WHERE ' + (' AND '.join(filter_queries))
 
     search_vector_var = '$search_vector'
-    if driver.provider == GraphProvider.KUZU:
+    if driver.provider == GraphProvider.LADYBUG:
         search_vector_var = f'CAST($search_vector AS FLOAT[{len(search_vector)}])'
 
     if driver.provider == GraphProvider.NEPTUNE:
@@ -1207,7 +1207,7 @@ async def node_similarity_search(
             len(records),
             [r['name'] for r in records[:5]] if records else '[]',
         )
-    elif driver.provider == GraphProvider.KUZU:
+    elif driver.provider == GraphProvider.LADYBUG:
         # Try HNSW vector index search first, fall back to brute-force on error.
         try:
             over_fetch_limit = limit * 10
@@ -1365,7 +1365,7 @@ async def node_bfs_search(
             """
         ]
 
-    if driver.provider == GraphProvider.KUZU:
+    if driver.provider == GraphProvider.LADYBUG:
         depth = bfs_max_depth * 2
         match_queries = [
             """
@@ -1523,7 +1523,7 @@ async def community_fulltext_search(
         filter_params['group_ids'] = group_ids
 
     yield_query = 'YIELD node AS c, score'
-    if driver.provider == GraphProvider.KUZU:
+    if driver.provider == GraphProvider.LADYBUG:
         yield_query = 'WITH node AS c, score'
 
     if driver.provider == GraphProvider.NEPTUNE:
@@ -1703,7 +1703,7 @@ async def community_similarity_search(
             routing_='r',
             **query_params,
         )
-    elif driver.provider == GraphProvider.KUZU:
+    elif driver.provider == GraphProvider.LADYBUG:
         # Try HNSW vector index search first, fall back to brute-force on error.
         try:
             over_fetch_limit = limit * 10
@@ -1920,12 +1920,12 @@ async def get_relevant_nodes(
     if filter_queries:
         filter_query = 'WHERE ' + (' AND '.join(filter_queries))
 
-    if driver.provider == GraphProvider.KUZU:
+    if driver.provider == GraphProvider.LADYBUG:
         embedding_size = len(nodes[0].name_embedding) if nodes[0].name_embedding is not None else 0
         if embedding_size == 0:
             return []
 
-        # FIXME: Kuzu currently does not support using variables such as `node.fulltext_query` as an input to FTS, which means `get_relevant_nodes()` won't work with Kuzu as the graph driver.
+        # FIXME: LadybugDB currently does not support using variables such as `node.fulltext_query` as an input to FTS, which means `get_relevant_nodes()` won't work with LadybugDB as the graph driver.
         query = (
             """
                                                                                                                                     UNWIND $nodes AS node
@@ -2129,7 +2129,7 @@ async def get_relevant_edges(
             **filter_params,
         )
     else:
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             embedding_size = (
                 len(edges[0].fact_embedding) if edges[0].fact_embedding is not None else 0
             )
@@ -2315,7 +2315,7 @@ async def get_edge_invalidation_candidates(
             **filter_params,
         )
     else:
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             embedding_size = (
                 len(edges[0].fact_embedding) if edges[0].fact_embedding is not None else 0
             )
@@ -2459,7 +2459,7 @@ async def node_distance_reranker(
     MATCH (center:Entity {uuid: $center_uuid})-[:RELATES_TO]-(n:Entity {uuid: node_uuid})
     RETURN 1 AS score, node_uuid AS uuid
     """
-    if driver.provider == GraphProvider.KUZU:
+    if driver.provider == GraphProvider.LADYBUG:
         query = """
         UNWIND $node_uuids AS node_uuid
         MATCH (center:Entity {uuid: $center_uuid})-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(n:Entity {uuid: node_uuid})
@@ -2675,7 +2675,7 @@ async def get_embeddings_for_edges(
         match_query = """
             MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity)
         """
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             match_query = """
                 MATCH (n:Entity)-[:RELATES_TO]-(e:RelatesToNode_)-[:RELATES_TO]-(m:Entity)
             """
@@ -2715,7 +2715,7 @@ async def episode_similarity_search(
     """Search Episodic nodes by content_embedding similarity.
 
     Returns a list of (EpisodicNode, score) tuples ordered by descending similarity.
-    Uses HNSW vector index for Kuzu/LadybugDB, with brute-force fallback.
+    Uses HNSW vector index for LadybugDB, with brute-force fallback.
     """
     filter_queries: list[str] = []
     filter_params: dict[str, Any] = {}
@@ -2729,7 +2729,7 @@ async def episode_similarity_search(
 
     records: list[Any] = []
 
-    if driver.provider == GraphProvider.KUZU:
+    if driver.provider == GraphProvider.LADYBUG:
         try:
             over_fetch_limit = limit * 10
             dim = len(search_vector)
@@ -2807,7 +2807,7 @@ async def episode_similarity_search(
                 **filter_params,
             )
     else:
-        # Brute-force for non-Kuzu providers
+        # Brute-force for non-LadybugDB providers
         filter_query = (' WHERE ' + ' AND '.join(filter_queries)) if filter_queries else ''
         search_vector_var = '$search_vector'
 

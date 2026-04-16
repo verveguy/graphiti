@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import LiteralString
 
 from graphiti_core.driver.driver import GraphDriver, GraphProvider
+from graphiti_core.driver.ladybug.hnsw_safe_writes import hnsw_safe_save_entity_edge
 from graphiti_core.embedder import EmbedderClient
 from graphiti_core.errors import EdgeNotFoundError, GroupsEdgesNotFoundError
 from graphiti_core.helpers import parse_db_date
@@ -63,7 +64,7 @@ class Edge(BaseModel, ABC):
             except NotImplementedError:
                 pass
 
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             await driver.execute_query(
                 """
                 MATCH (n)-[e:MENTIONS|HAS_MEMBER {uuid: $uuid}]->(m)
@@ -99,7 +100,7 @@ class Edge(BaseModel, ABC):
             except NotImplementedError:
                 pass
 
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             await driver.execute_query(
                 """
                 MATCH (n)-[e:MENTIONS|HAS_MEMBER]->(m)
@@ -315,7 +316,7 @@ class EntityEdge(Edge):
                 RETURN [x IN split(e.fact_embedding, ",") | toFloat(x)] as fact_embedding
             """
 
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             query = """
                 MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_ {uuid: $uuid})-[:RELATES_TO]->(m:Entity)
                 RETURN e.fact_embedding AS fact_embedding
@@ -355,12 +356,10 @@ class EntityEdge(Edge):
             'reference_time': self.reference_time,
         }
 
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             edge_data['attributes'] = json.dumps(self.attributes)
-            result = await driver.execute_query(
-                get_entity_edge_save_query(driver.provider),
-                **edge_data,
-            )
+            await hnsw_safe_save_entity_edge(driver, None, edge_data)
+            result = None
         else:
             edge_data.update(self.attributes or {})
             result = await driver.execute_query(
@@ -383,7 +382,7 @@ class EntityEdge(Edge):
         match_query = """
             MATCH (n:Entity)-[e:RELATES_TO {uuid: $uuid}]->(m:Entity)
         """
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             match_query = """
                 MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_ {uuid: $uuid})-[:RELATES_TO]->(m:Entity)
             """
@@ -419,7 +418,7 @@ class EntityEdge(Edge):
         match_query = """
             MATCH (n:Entity {uuid: $source_node_uuid})-[e:RELATES_TO]->(m:Entity {uuid: $target_node_uuid})
         """
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             match_query = """
                 MATCH (n:Entity {uuid: $source_node_uuid})
                       -[:RELATES_TO]->(e:RelatesToNode_)
@@ -455,7 +454,7 @@ class EntityEdge(Edge):
         match_query = """
             MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity)
         """
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             match_query = """
                 MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m:Entity)
             """
@@ -505,7 +504,7 @@ class EntityEdge(Edge):
         match_query = """
             MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity)
         """
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             match_query = """
                 MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m:Entity)
             """
@@ -550,7 +549,7 @@ class EntityEdge(Edge):
         match_query = """
             MATCH (n:Entity {uuid: $node_uuid})-[e:RELATES_TO]-(m:Entity)
         """
-        if driver.provider == GraphProvider.KUZU:
+        if driver.provider == GraphProvider.LADYBUG:
             match_query = """
                 MATCH (n:Entity {uuid: $node_uuid})-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m:Entity)
             """
@@ -965,7 +964,7 @@ def get_episodic_edge_from_record(record: Any) -> EpisodicEdge:
 
 def get_entity_edge_from_record(record: Any, provider: GraphProvider) -> EntityEdge:
     episodes = record['episodes']
-    if provider == GraphProvider.KUZU:
+    if provider == GraphProvider.LADYBUG:
         attributes = json.loads(record['attributes']) if record['attributes'] else {}
     else:
         attributes = record['attributes']

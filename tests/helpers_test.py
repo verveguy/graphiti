@@ -47,6 +47,15 @@ if os.getenv('DISABLE_FALKORDB') is None:
     except ImportError:
         raise
 
+if os.getenv('DISABLE_LADYBUG') is None:
+    try:
+        from graphiti_core.driver.ladybug_driver import LadybugDriver
+
+        drivers.append(GraphProvider.LADYBUG)
+    except ImportError:
+        raise
+
+
 # Disable Neptune for now
 os.environ['DISABLE_NEPTUNE'] = 'True'
 if os.getenv('DISABLE_NEPTUNE') is None:
@@ -70,6 +79,9 @@ NEPTUNE_HOST = os.getenv('NEPTUNE_HOST', 'localhost')
 NEPTUNE_PORT = os.getenv('NEPTUNE_PORT', 8182)
 AOSS_HOST = os.getenv('AOSS_HOST', None)
 
+LADYBUG_DB = os.getenv('LADYBUG_DB', ':memory:')
+
+
 group_id = 'graphiti_test_group'
 group_id_2 = 'graphiti_test_group_2'
 
@@ -88,6 +100,11 @@ def get_driver(provider: GraphProvider) -> GraphDriver:
             username=FALKORDB_USER,
             password=FALKORDB_PASSWORD,
         )
+    elif provider == GraphProvider.LADYBUG:
+        driver = LadybugDriver(
+            db=LADYBUG_DB,
+        )
+        return driver
     elif provider == GraphProvider.NEPTUNE:
         return NeptuneDriver(
             host=NEPTUNE_HOST,

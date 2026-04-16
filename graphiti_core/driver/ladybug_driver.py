@@ -1,11 +1,8 @@
 """
 LadybugDB driver for graphiti-core.
 
-Drop-in replacement for KuzuDriver using LadybugDB (real-ladybug on PyPI),
-the community fork of KuzuDB. Structurally identical to kuzu_driver.py with:
-  1. `import real_ladybug as kuzu`
-  2. Timezone fix in execute_query() for issue #893/#920
-  3. provider kept as KUZU so all KUZU-specific branches continue to fire
+Drop-in replacement using LadybugDB (real-ladybug on PyPI),
+the community fork of KuzuDB.
 """
 
 from __future__ import annotations
@@ -22,19 +19,19 @@ if TYPE_CHECKING:
     from graphiti_core.driver.wal import WalWriter
 
 from graphiti_core.driver.driver import GraphDriver, GraphDriverSession, GraphProvider
-from graphiti_core.driver.kuzu.operations.community_edge_ops import KuzuCommunityEdgeOperations
-from graphiti_core.driver.kuzu.operations.community_node_ops import KuzuCommunityNodeOperations
-from graphiti_core.driver.kuzu.operations.entity_edge_ops import KuzuEntityEdgeOperations
-from graphiti_core.driver.kuzu.operations.entity_node_ops import KuzuEntityNodeOperations
-from graphiti_core.driver.kuzu.operations.episode_node_ops import KuzuEpisodeNodeOperations
-from graphiti_core.driver.kuzu.operations.episodic_edge_ops import KuzuEpisodicEdgeOperations
-from graphiti_core.driver.kuzu.operations.graph_ops import KuzuGraphMaintenanceOperations
-from graphiti_core.driver.kuzu.operations.has_episode_edge_ops import KuzuHasEpisodeEdgeOperations
-from graphiti_core.driver.kuzu.operations.next_episode_edge_ops import (
-    KuzuNextEpisodeEdgeOperations,
+from graphiti_core.driver.ladybug.operations.community_edge_ops import LadybugCommunityEdgeOperations
+from graphiti_core.driver.ladybug.operations.community_node_ops import LadybugCommunityNodeOperations
+from graphiti_core.driver.ladybug.operations.entity_edge_ops import LadybugEntityEdgeOperations
+from graphiti_core.driver.ladybug.operations.entity_node_ops import LadybugEntityNodeOperations
+from graphiti_core.driver.ladybug.operations.episode_node_ops import LadybugEpisodeNodeOperations
+from graphiti_core.driver.ladybug.operations.episodic_edge_ops import LadybugEpisodicEdgeOperations
+from graphiti_core.driver.ladybug.operations.graph_ops import LadybugGraphMaintenanceOperations
+from graphiti_core.driver.ladybug.operations.has_episode_edge_ops import LadybugHasEpisodeEdgeOperations
+from graphiti_core.driver.ladybug.operations.next_episode_edge_ops import (
+    LadybugNextEpisodeEdgeOperations,
 )
-from graphiti_core.driver.kuzu.operations.saga_node_ops import KuzuSagaNodeOperations
-from graphiti_core.driver.kuzu.operations.search_ops import KuzuSearchOperations
+from graphiti_core.driver.ladybug.operations.saga_node_ops import LadybugSagaNodeOperations
+from graphiti_core.driver.ladybug.operations.search_ops import LadybugSearchOperations
 from graphiti_core.driver.operations.community_edge_ops import CommunityEdgeOperations
 from graphiti_core.driver.operations.community_node_ops import CommunityNodeOperations
 from graphiti_core.driver.operations.entity_edge_ops import EntityEdgeOperations
@@ -51,7 +48,7 @@ from graphiti_core.embedder.client import EMBEDDING_DIM
 
 logger = logging.getLogger(__name__)
 
-# Schema is identical to kuzu_driver.py — LadybugDB uses the same Cypher DDL.
+# LadybugDB schema DDL.
 SCHEMA_QUERIES = f"""
     CREATE NODE TABLE IF NOT EXISTS Episodic (
         uuid STRING PRIMARY KEY,
@@ -151,9 +148,8 @@ def _fix_record_timestamps(record: dict[str, Any]) -> dict[str, Any]:
 
 
 class LadybugDriver(GraphDriver):
-    # Keep provider as KUZU so all KUZU-specific branches in graphiti
-    # (e.g. RelatesToNode_ handling, FTS index loading) continue to fire.
-    provider: GraphProvider = GraphProvider.KUZU
+    # Provider identity for LadybugDB
+    provider: GraphProvider = GraphProvider.LADYBUG
     aoss_client: None = None
 
     def __init__(
@@ -164,7 +160,7 @@ class LadybugDriver(GraphDriver):
         wal_writer: WalWriter | None = None,
     ):
         super().__init__()
-        self._database = ''  # Kuzu/LadybugDB is single-database; needed by graphiti.py
+        self._database = ''  # LadybugDB is single-database; needed by graphiti.py
         self.db = kuzu.Database(db)
 
         self.setup_schema()
@@ -182,18 +178,18 @@ class LadybugDriver(GraphDriver):
             self._wal = WalWriter(wal_dir)
             self._wal_owner = True
 
-        # Reuse all Kuzu operations — they only speak Cypher, no kuzu import.
-        self._entity_node_ops = KuzuEntityNodeOperations()
-        self._episode_node_ops = KuzuEpisodeNodeOperations()
-        self._community_node_ops = KuzuCommunityNodeOperations()
-        self._saga_node_ops = KuzuSagaNodeOperations()
-        self._entity_edge_ops = KuzuEntityEdgeOperations()
-        self._episodic_edge_ops = KuzuEpisodicEdgeOperations()
-        self._community_edge_ops = KuzuCommunityEdgeOperations()
-        self._has_episode_edge_ops = KuzuHasEpisodeEdgeOperations()
-        self._next_episode_edge_ops = KuzuNextEpisodeEdgeOperations()
-        self._search_ops = KuzuSearchOperations()
-        self._graph_ops = KuzuGraphMaintenanceOperations()
+        # Ladybug operations — they only speak Cypher.
+        self._entity_node_ops = LadybugEntityNodeOperations()
+        self._episode_node_ops = LadybugEpisodeNodeOperations()
+        self._community_node_ops = LadybugCommunityNodeOperations()
+        self._saga_node_ops = LadybugSagaNodeOperations()
+        self._entity_edge_ops = LadybugEntityEdgeOperations()
+        self._episodic_edge_ops = LadybugEpisodicEdgeOperations()
+        self._community_edge_ops = LadybugCommunityEdgeOperations()
+        self._has_episode_edge_ops = LadybugHasEpisodeEdgeOperations()
+        self._next_episode_edge_ops = LadybugNextEpisodeEdgeOperations()
+        self._search_ops = LadybugSearchOperations()
+        self._graph_ops = LadybugGraphMaintenanceOperations()
 
     # --- Operations properties ---
 
@@ -285,6 +281,19 @@ class LadybugDriver(GraphDriver):
     async def close(self):
         if self._wal is not None and self._wal_owner:
             await self._wal.close()
+        # Explicitly close the AsyncConnection before the Database so that all
+        # in-flight queries are drained and Kuzu's WAL is checkpointed into the
+        # main database file before the process exits.  Relying on GC is unsafe
+        # under SIGTERM → SIGKILL escalations with short timeouts (e.g. 5 s
+        # systemd/container shutdown budgets) because GC may never run, leaving
+        # db.wal uncheckpointed and the database unreadable on next startup.
+        # Both close() calls are synchronous and idempotent.
+        # Use try/finally so db.close() (WAL checkpoint) runs even if
+        # client.close() raises an unexpected exception.
+        try:
+            self.client.close()
+        finally:
+            self.db.close()
 
     async def rotate_wal(self) -> None:
         """Rotate the WAL file, closing the current tip file."""
@@ -311,11 +320,11 @@ class LadybugDriver(GraphDriver):
         except Exception as e:
             logger.warning(f'Could not load vector extension on async connection: {e}')
 
-        # Create FTS indexes — the original KuzuDriver was a no-op here,
+        # Create FTS indexes
         # but graphiti's dedup pipeline needs fulltext search to work.
         from graphiti_core.graph_queries import get_fulltext_indices, get_vector_indices
 
-        for query in get_fulltext_indices(GraphProvider.KUZU):
+        for query in get_fulltext_indices(GraphProvider.LADYBUG):
             try:
                 await self.client.execute(query)
                 logger.info(f'Created FTS index: {query[:80]}')
@@ -326,7 +335,7 @@ class LadybugDriver(GraphDriver):
                     logger.error(f'Failed to create FTS index: {e}\n{query}')
 
         # Create HNSW vector indexes for similarity search.
-        for query in get_vector_indices(GraphProvider.KUZU):
+        for query in get_vector_indices(GraphProvider.LADYBUG):
             try:
                 await self.client.execute(query)
                 logger.info(f'Created vector index: {query[:80]}')
@@ -369,7 +378,7 @@ class LadybugDriver(GraphDriver):
 
 
 class LadybugDriverSession(GraphDriverSession):
-    provider = GraphProvider.KUZU
+    provider = GraphProvider.LADYBUG
 
     def __init__(self, driver: LadybugDriver):
         self.driver = driver
@@ -425,7 +434,7 @@ def _is_timestamp_field(key: str) -> bool:
 def _deserialize_wal_params(params: dict[str, Any]) -> dict[str, Any]:
     """Convert WAL JSON params back to Python types for LadybugDB.
 
-    WAL serializes datetime objects as ISO-8601 strings. LadybugDB (Kuzu)
+    WAL serializes datetime objects as ISO-8601 strings. LadybugDB
     requires native datetime objects for TIMESTAMP columns. This function
     detects timestamp fields and converts them back.
 
@@ -496,7 +505,7 @@ async def replay_wal_ladybug(
             # No wal_dir — we don't want to re-log replayed mutations
             driver = LadybugDriver(db=db)
             # NOTE: build_indices_and_constraints is called AFTER replay,
-            # not before. KuzuDB HNSW indexes block in-place vector column
+            # not before. LadybugDB HNSW indexes block in-place vector column
             # updates via MERGE...SET, so we bulk-load data first, then
             # create indexes on the final state.
 

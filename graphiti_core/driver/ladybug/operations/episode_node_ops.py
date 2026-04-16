@@ -18,43 +18,37 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from graphiti_core.driver.driver import GraphProvider
+from graphiti_core.driver.ladybug.hnsw_safe_writes import hnsw_safe_save_episode_node
 from graphiti_core.driver.operations.episode_node_ops import EpisodeNodeOperations
 from graphiti_core.driver.query_executor import QueryExecutor, Transaction
 from graphiti_core.driver.record_parsers import episodic_node_from_record
 from graphiti_core.errors import NodeNotFoundError
-from graphiti_core.models.nodes.node_db_queries import (
-    EPISODIC_NODE_RETURN,
-    get_episode_node_save_query,
-)
+from graphiti_core.models.nodes.node_db_queries import EPISODIC_NODE_RETURN
 from graphiti_core.nodes import EpisodicNode
 
 logger = logging.getLogger(__name__)
 
 
-class KuzuEpisodeNodeOperations(EpisodeNodeOperations):
+class LadybugEpisodeNodeOperations(EpisodeNodeOperations):
     async def save(
         self,
         executor: QueryExecutor,
         node: EpisodicNode,
         tx: Transaction | None = None,
     ) -> None:
-        query = get_episode_node_save_query(GraphProvider.KUZU)
         params: dict[str, Any] = {
             'uuid': node.uuid,
             'name': node.name,
             'group_id': node.group_id,
             'source_description': node.source_description,
             'content': node.content,
+            'content_embedding': node.content_embedding,
             'entity_edges': node.entity_edges,
             'created_at': node.created_at,
             'valid_at': node.valid_at,
             'source': node.source.value,
         }
-        if tx is not None:
-            await tx.run(query, **params)
-        else:
-            await executor.execute_query(query, **params)
+        await hnsw_safe_save_episode_node(executor, tx, params)
 
         logger.debug(f'Saved Episode to Graph: {node.uuid}')
 
@@ -65,7 +59,7 @@ class KuzuEpisodeNodeOperations(EpisodeNodeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support UNWIND - iterate and save individually
+        # LadybugDB doesn't support UNWIND - iterate and save individually
         for node in nodes:
             await self.save(executor, node, tx=tx)
 
@@ -93,7 +87,7 @@ class KuzuEpisodeNodeOperations(EpisodeNodeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support IN TRANSACTIONS OF - simple delete
+        # LadybugDB doesn't support IN TRANSACTIONS OF - simple delete
         query = """
             MATCH (n:Episodic {group_id: $group_id})
             DETACH DELETE n
@@ -110,7 +104,7 @@ class KuzuEpisodeNodeOperations(EpisodeNodeOperations):
         tx: Transaction | None = None,
         batch_size: int = 100,
     ) -> None:
-        # Kuzu doesn't support IN TRANSACTIONS OF - simple delete
+        # LadybugDB doesn't support IN TRANSACTIONS OF - simple delete
         query = """
             MATCH (n:Episodic)
             WHERE n.uuid IN $uuids
