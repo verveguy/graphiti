@@ -465,12 +465,18 @@ async def replay_wal_ladybug(
     db: str,
     from_seq: int = 0,
     dry_run: bool = False,
+    batch_size: int = 10000,
 ) -> int:
     """Replay WAL files into a LadybugDB database.
 
     Creates a LadybugDriver WITHOUT WAL (to avoid re-logging replayed
     mutations), reads JSONL files in filename order, and executes each
     mutation.
+
+    Uses BEGIN TRANSACTION / COMMIT batching for ~60x speedup over
+    per-mutation implicit transactions. On batch failure, uses binary-split
+    retry to isolate the failing mutation(s) while preserving all good
+    mutations. See LadybugDB/ladybug#386.
 
     FalkorDB-era WAL entries (produced by wal_dump.py) wrap embedding
     parameters in `vecf32($...)` which LadybugDB does not support; those
@@ -482,10 +488,13 @@ async def replay_wal_ladybug(
         db: LadybugDB database path.
         from_seq: Skip events with seq < from_seq (for partial replay).
         dry_run: If True, parse and validate but don't execute.
+        batch_size: Mutations per transaction commit (default 10000).
 
     Returns:
         Number of mutations replayed.
     """
+    import real_ladybug as ladybug
+
     wal_path = Path(wal_dir)
     if not wal_path.is_dir():
         raise FileNotFoundError(f'WAL directory not found: {wal_path}')
@@ -496,18 +505,48 @@ async def replay_wal_ladybug(
         return 0
 
     driver: LadybugDriver | None = None
+    conn = None
     replayed = 0
     skipped = 0
     errors = 0
+
+    def _replay_batch(
+        conn: 'ladybug.Connection',
+        mutations: list[tuple[int, str, dict]],
+    ) -> tuple[int, int]:
+        """Replay a batch in a single transaction with binary-split retry."""
+        if not mutations:
+            return 0, 0
+        try:
+            conn.execute('BEGIN TRANSACTION')
+            for _seq, cypher, params in mutations:
+                conn.execute(cypher, parameters=params)
+            conn.execute('COMMIT')
+            return len(mutations), 0
+        except Exception as e:
+            try:
+                conn.execute('ROLLBACK')
+            except Exception:
+                pass
+            if len(mutations) == 1:
+                logger.warning('Replay skip at seq=%d: %s', mutations[0][0], e)
+                return 0, 1
+            mid = len(mutations) // 2
+            left_r, left_e = _replay_batch(conn, mutations[:mid])
+            right_r, right_e = _replay_batch(conn, mutations[mid:])
+            return left_r + right_r, left_e + right_e
 
     try:
         if not dry_run:
             # No wal_dir — we don't want to re-log replayed mutations
             driver = LadybugDriver(db=db)
+            conn = ladybug.Connection(driver.db)
             # NOTE: build_indices_and_constraints is called AFTER replay,
             # not before. LadybugDB HNSW indexes block in-place vector column
             # updates via MERGE...SET, so we bulk-load data first, then
             # create indexes on the final state.
+
+        batch: list[tuple[int, str, dict]] = []
 
         for wal_file in wal_files:
             logger.info('Replaying %s...', wal_file.name)
@@ -540,16 +579,30 @@ async def replay_wal_ladybug(
                         replayed += 1
                         continue
 
-                    try:
-                        if driver is None:
-                            raise RuntimeError('LadybugDriver is not initialized for WAL replay')
-                        await driver.execute_query(cypher, **params)
-                        replayed += 1
-                    except Exception as e:
-                        logger.error('Replay error at seq=%d: %s\n  %s', seq, e, cypher[:200])
-                        errors += 1
+                    if conn is None:
+                        raise RuntimeError('Connection is not initialized for WAL replay')
+
+                    batch.append((seq, cypher, params))
+
+                    if len(batch) >= batch_size:
+                        batch_r, batch_e = _replay_batch(conn, batch)
+                        replayed += batch_r
+                        errors += batch_e
+                        batch = []
+                        logger.info(
+                            'Committed batch: %d total replayed (%d errors)',
+                            replayed, errors,
+                        )
+
+        # Flush remaining batch
+        if not dry_run and conn is not None and batch:
+            batch_r, batch_e = _replay_batch(conn, batch)
+            replayed += batch_r
+            errors += batch_e
 
     finally:
+        if conn is not None:
+            conn.close()
         if driver is not None:
             if not dry_run and replayed > 0:
                 logger.info('Building indices and constraints on replayed data...')

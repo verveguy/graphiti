@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 # Maximum number of nodes to summarize in a single LLM call
 MAX_NODES = 30
 NODE_DEDUP_CANDIDATE_LIMIT = 15
-NODE_DEDUP_COSINE_MIN_SCORE = 0.6
+NODE_DEDUP_COSINE_MIN_SCORE = 0.0  # lowered from 0.6; bge-base-en-v1.5 scores 0.5-0.65 for true dupes
 
 NodeSummaryFilter = Callable[[EntityNode], Awaitable[bool]]
 
