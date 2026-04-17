@@ -1,4 +1,9 @@
-"""Tests for FalkorDB HNSW vector index search branches in search_utils.py."""
+"""Tests for FalkorDB similarity search branches in search_utils.py.
+
+Note: FalkorDB node/edge similarity use brute-force cosine ranking (FalkorDB's
+HNSW vector index is unreliable — see FalkorDB#716). Only community similarity
+still uses the HNSW `db.idx.vector.queryNodes` path.
+"""
 
 from unittest.mock import AsyncMock, PropertyMock
 
@@ -7,10 +12,22 @@ import pytest
 from graphiti_core.driver.driver import GraphProvider
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.search.search_utils import (
+    _edge_embedding_cache,
+    _node_embedding_cache,
     community_similarity_search,
     edge_similarity_search,
     node_similarity_search,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_bruteforce_caches():
+    """Invalidate module-level embedding caches between tests."""
+    _node_embedding_cache.invalidate()
+    _edge_embedding_cache.invalidate()
+    yield
+    _node_embedding_cache.invalidate()
+    _edge_embedding_cache.invalidate()
 
 
 def _make_falkordb_driver():
@@ -72,11 +89,16 @@ def _make_community_record():
 
 
 class TestFalkorDBEdgeSimilaritySearch:
-    """Tests for FalkorDB HNSW branch in edge_similarity_search."""
+    """Tests for FalkorDB brute-force branch in edge_similarity_search.
+
+    FalkorDB no longer uses HNSW for edge vector search — see the comment in
+    search_utils.py referencing FalkorDB#716. The driver loads all edge
+    embeddings into an in-process cache and ranks with vectorized cosine.
+    """
 
     @pytest.mark.asyncio
-    async def test_uses_hnsw_index_query(self):
-        """Test that FalkorDB branch uses db.idx.vector.queryRelationships."""
+    async def test_uses_brute_force_match_query(self):
+        """Test that FalkorDB loads edges via MATCH and does NOT use HNSW index."""
         driver = _make_falkordb_driver()
         driver.execute_query.return_value = ([_make_edge_record()], ['uuid'], None)
 
@@ -92,102 +114,63 @@ class TestFalkorDBEdgeSimilaritySearch:
 
         driver.execute_query.assert_called_once()
         query = driver.execute_query.call_args[0][0]
-        assert 'db.idx.vector.queryRelationships' in query
-        assert 'RELATES_TO' in query
+        assert 'MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity)' in query
         assert 'fact_embedding' in query
+        assert 'db.idx.vector' not in query  # no HNSW
 
     @pytest.mark.asyncio
-    async def test_uses_start_end_node_not_match(self):
-        """Test that FalkorDB branch uses startNode/endNode instead of MATCH re-scan."""
+    async def test_caches_all_edges_in_unscoped_search(self):
+        """Unscoped search loads edges once into the module-level cache and reuses them."""
         driver = _make_falkordb_driver()
         driver.execute_query.return_value = ([_make_edge_record()], ['uuid'], None)
 
         search_vector = [0.1] * 768
+        for _ in range(2):
+            await edge_similarity_search(
+                driver,
+                search_vector,
+                source_node_uuid=None,
+                target_node_uuid=None,
+                search_filter=SearchFilters(),
+                group_ids=['group-1'],
+            )
+
+        # The second call reuses the cache — DB should be hit only once.
+        assert driver.execute_query.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_scoped_search_filters_by_edge_uuids(self):
+        """Scoped search (edge_uuids set) applies the uuid filter in the query."""
+        driver = _make_falkordb_driver()
+        driver.execute_query.return_value = ([_make_edge_record()], ['uuid'], None)
+
+        search_vector = [0.1] * 768
+        edge_uuids = ['edge-1', 'edge-2']
         await edge_similarity_search(
             driver,
             search_vector,
             source_node_uuid=None,
             target_node_uuid=None,
-            search_filter=SearchFilters(),
+            search_filter=SearchFilters(edge_uuids=edge_uuids),
             group_ids=['group-1'],
         )
 
         query = driver.execute_query.call_args[0][0]
-        assert 'startNode(e)' in query
-        assert 'endNode(e)' in query
-        # Should NOT use MATCH to re-scan edges
-        assert 'MATCH (n:Entity)-[e]->(m:Entity)' not in query
-
-    @pytest.mark.asyncio
-    async def test_over_fetches_for_post_filtering(self):
-        """Test that the over-fetch limit is passed for post-filtering compensation."""
-        driver = _make_falkordb_driver()
-        driver.execute_query.return_value = ([], [], None)
-
-        search_vector = [0.1] * 768
-        limit = 10
-        await edge_similarity_search(
-            driver,
-            search_vector,
-            source_node_uuid=None,
-            target_node_uuid=None,
-            search_filter=SearchFilters(),
-            group_ids=['group-1'],
-            limit=limit,
-        )
-
+        assert 'e.uuid IN $edge_uuids' in query
         call_kwargs = driver.execute_query.call_args[1]
-        assert call_kwargs['over_fetch_limit'] == limit * 10
-        assert call_kwargs['limit'] == limit
-
-    @pytest.mark.asyncio
-    async def test_applies_group_id_filter(self):
-        """Test that group_id filter is applied in the query."""
-        driver = _make_falkordb_driver()
-        driver.execute_query.return_value = ([], [], None)
-
-        search_vector = [0.1] * 768
-        await edge_similarity_search(
-            driver,
-            search_vector,
-            source_node_uuid=None,
-            target_node_uuid=None,
-            search_filter=SearchFilters(),
-            group_ids=['group-1'],
-        )
-
-        query = driver.execute_query.call_args[0][0]
-        assert 'group_id' in query
-
-    @pytest.mark.asyncio
-    async def test_applies_min_score_filter(self):
-        """Test that min_score filter is included in the query."""
-        driver = _make_falkordb_driver()
-        driver.execute_query.return_value = ([], [], None)
-
-        search_vector = [0.1] * 768
-        await edge_similarity_search(
-            driver,
-            search_vector,
-            source_node_uuid=None,
-            target_node_uuid=None,
-            search_filter=SearchFilters(),
-            group_ids=['group-1'],
-            min_score=0.5,
-        )
-
-        query = driver.execute_query.call_args[0][0]
-        assert 'score > $min_score' in query
-        call_kwargs = driver.execute_query.call_args[1]
-        assert call_kwargs['min_score'] == 0.5
+        assert call_kwargs['edge_uuids'] == edge_uuids
 
 
 class TestFalkorDBNodeSimilaritySearch:
-    """Tests for FalkorDB HNSW branch in node_similarity_search."""
+    """Tests for FalkorDB brute-force branch in node_similarity_search.
+
+    Like edges, FalkorDB node similarity is brute-force cosine ranked from an
+    in-process cache (FalkorDB#716 — the HNSW index is unreliable for nodes too).
+    """
 
     @pytest.mark.asyncio
-    async def test_uses_hnsw_index_query(self):
-        """Test that FalkorDB branch uses db.idx.vector.queryNodes for Entity."""
+    async def test_uses_brute_force_match_query(self):
+        """Test that FalkorDB loads nodes via MATCH and does NOT use HNSW index."""
         driver = _make_falkordb_driver()
         driver.execute_query.return_value = ([_make_node_record()], ['uuid'], None)
 
@@ -201,28 +184,27 @@ class TestFalkorDBNodeSimilaritySearch:
 
         driver.execute_query.assert_called_once()
         query = driver.execute_query.call_args[0][0]
-        assert 'db.idx.vector.queryNodes' in query
-        assert "'Entity'" in query
+        assert 'MATCH (n:Entity)' in query
         assert 'name_embedding' in query
+        assert 'db.idx.vector' not in query  # no HNSW
 
     @pytest.mark.asyncio
-    async def test_over_fetches_for_post_filtering(self):
-        """Test that the over-fetch limit is passed."""
+    async def test_caches_all_nodes_between_calls(self):
+        """Repeated calls reuse the module-level node embedding cache."""
         driver = _make_falkordb_driver()
-        driver.execute_query.return_value = ([], [], None)
+        driver.execute_query.return_value = ([_make_node_record()], ['uuid'], None)
 
         search_vector = [0.1] * 768
-        limit = 5
-        await node_similarity_search(
-            driver,
-            search_vector,
-            search_filter=SearchFilters(),
-            group_ids=['group-1'],
-            limit=limit,
-        )
+        for _ in range(2):
+            await node_similarity_search(
+                driver,
+                search_vector,
+                search_filter=SearchFilters(),
+                group_ids=['group-1'],
+            )
 
-        call_kwargs = driver.execute_query.call_args[1]
-        assert call_kwargs['over_fetch_limit'] == limit * 10
+        # The second call reuses the cache — DB should be hit only once.
+        assert driver.execute_query.call_count == 1
 
     @pytest.mark.asyncio
     async def test_returns_empty_list_on_no_results(self):

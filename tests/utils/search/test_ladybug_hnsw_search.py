@@ -130,8 +130,8 @@ class TestLadybugNodeSimilaritySearch:
         assert call_kwargs['min_score'] == 0.7
 
     @pytest.mark.asyncio
-    async def test_casts_search_vector_with_dimension(self):
-        """Test that the search vector is CAST to the correct FLOAT[N] dimension."""
+    async def test_passes_search_vector_as_parameter(self):
+        """Test that the search vector is passed to QUERY_VECTOR_INDEX as a $search_vector param."""
         driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
@@ -143,7 +143,9 @@ class TestLadybugNodeSimilaritySearch:
         )
 
         query = driver.execute_query.call_args[0][0]
-        assert 'FLOAT[768]' in query
+        assert '$search_vector' in query
+        call_kwargs = driver.execute_query.call_args[1]
+        assert call_kwargs['search_vector'] == search_vector
 
     @pytest.mark.asyncio
     async def test_falls_back_to_brute_force_on_error(self):
@@ -228,20 +230,23 @@ class TestLadybugEdgeSimilaritySearch:
         assert '1.0 - distance' in query
 
     @pytest.mark.asyncio
-    async def test_casts_search_vector_with_dimension(self):
+    async def test_passes_search_vector_as_parameter(self):
         driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
+        search_vector = [0.1] * 768
         await edge_similarity_search(
             driver,
-            [0.1] * 768,
+            search_vector,
             source_node_uuid=None,
             target_node_uuid=None,
             search_filter=SearchFilters(),
         )
 
         query = driver.execute_query.call_args[0][0]
-        assert 'FLOAT[768]' in query
+        assert '$search_vector' in query
+        call_kwargs = driver.execute_query.call_args[1]
+        assert call_kwargs['search_vector'] == search_vector
 
     @pytest.mark.asyncio
     async def test_falls_back_to_brute_force_on_error(self):
@@ -298,14 +303,17 @@ class TestLadybugCommunitySimilaritySearch:
         assert '1.0 - distance' in query
 
     @pytest.mark.asyncio
-    async def test_casts_search_vector_with_dimension(self):
+    async def test_passes_search_vector_as_parameter(self):
         driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
-        await community_similarity_search(driver, [0.1] * 768)
+        search_vector = [0.1] * 768
+        await community_similarity_search(driver, search_vector)
 
         query = driver.execute_query.call_args[0][0]
-        assert 'FLOAT[768]' in query
+        assert '$search_vector' in query
+        call_kwargs = driver.execute_query.call_args[1]
+        assert call_kwargs['search_vector'] == search_vector
 
     @pytest.mark.asyncio
     async def test_applies_group_id_filter(self):
@@ -387,14 +395,17 @@ class TestLadybugEpisodeSimilaritySearch:
         assert '1.0 - distance' in query
 
     @pytest.mark.asyncio
-    async def test_casts_search_vector_with_dimension(self):
+    async def test_passes_search_vector_as_parameter(self):
         driver = _make_ladybug_driver()
         driver.execute_query.return_value = ([], [], None)
 
-        await episode_similarity_search(driver, [0.1] * 768, group_ids=None)
+        search_vector = [0.1] * 768
+        await episode_similarity_search(driver, search_vector, group_ids=None)
 
         query = driver.execute_query.call_args[0][0]
-        assert 'FLOAT[768]' in query
+        assert '$search_vector' in query
+        call_kwargs = driver.execute_query.call_args[1]
+        assert call_kwargs['search_vector'] == search_vector
 
     @pytest.mark.asyncio
     async def test_falls_back_to_brute_force_on_error(self):
