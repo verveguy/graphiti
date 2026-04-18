@@ -19,8 +19,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -81,6 +83,7 @@ class WalWriter:
         self._file_seq = 0
         self._closed = False
         self._ref_count = 1  # Reference counting for shared WAL instances
+        self._chunk_buffer: list[str] | None = None  # None = no chunk active
 
         # Create WAL directory if it doesn't exist
         self._wal_dir.mkdir(parents=True, exist_ok=True)
@@ -225,6 +228,55 @@ class WalWriter:
             if self._file is not None:
                 self._rotate_file()
 
+    def _flush_chunk_buffer(self) -> None:
+        """Write all buffered chunk lines to a single new WAL file and fsync.
+
+        Must be called while holding self._lock with _chunk_buffer set.
+        """
+        if not self._chunk_buffer:
+            return
+
+        filename = self._get_current_filename()
+        with open(filename, 'w', encoding='utf-8') as f:  # noqa: SIM115
+            for line in self._chunk_buffer:
+                f.write(line + '\n')
+            f.flush()
+            os.fsync(f.fileno())
+
+        self._file_seq += 1
+        logger.debug(f'WAL: Flushed chunk of {len(self._chunk_buffer)} mutations to {filename}')
+
+    @asynccontextmanager
+    async def chunk(self):
+        """Context manager for chunk-level WAL batching.
+
+        All mutations logged inside this context are buffered in memory. On
+        successful exit, they are written to a single JSONL file and fsynced.
+        On exception (including asyncio cancellation), the buffer is discarded
+        and nothing is written.
+
+        Raises RuntimeError if called while another chunk is already active.
+        """
+        async with self._lock:
+            if self._chunk_buffer is not None:
+                raise RuntimeError('WAL: Cannot start a chunk while another chunk is already active')
+            self._chunk_buffer = []
+
+        try:
+            yield
+        except BaseException:
+            # Discard buffer on any exception (including CancelledError)
+            async with self._lock:
+                self._chunk_buffer = None
+            raise
+        else:
+            # Flush buffer to disk on clean exit
+            async with self._lock:
+                try:
+                    self._flush_chunk_buffer()
+                finally:
+                    self._chunk_buffer = None
+
     async def log_mutation(self, cypher: str, params: dict[str, Any], database: str) -> None:
         """
         Log a mutation to the WAL if it passes filtering.
@@ -250,13 +302,6 @@ class WalWriter:
             if self._closed:
                 return
 
-            # Rotate if needed
-            if self._events_in_file >= self._max_events:
-                self._rotate_file()
-
-            # Ensure file is open
-            self._ensure_file_open()
-
             # Build entry
             entry = {
                 'seq': self._current_seq,
@@ -266,15 +311,33 @@ class WalWriter:
                 'params': self._serialize_params(params),
             }
 
-            # Write entry
             try:
                 line = json.dumps(entry, ensure_ascii=False, separators=(',', ':'))
+            except (TypeError, ValueError) as e:
+                logger.error(f'WAL: Failed to serialize entry: {e}')
+                raise
+
+            # When a chunk context is active, buffer instead of writing to disk
+            if self._chunk_buffer is not None:
+                self._chunk_buffer.append(line)
+                self._current_seq += 1
+                return
+
+            # Rotate if needed
+            if self._events_in_file >= self._max_events:
+                self._rotate_file()
+
+            # Ensure file is open
+            self._ensure_file_open()
+
+            # Write entry
+            try:
                 self._file.write(line + '\n')
                 self._file.flush()  # Ensure durability
                 self._current_seq += 1
                 self._events_in_file += 1
-            except (TypeError, ValueError) as e:
-                logger.error(f'WAL: Failed to serialize entry: {e}')
+            except OSError as e:
+                logger.error(f'WAL: Failed to write entry: {e}')
                 raise
 
     @staticmethod
