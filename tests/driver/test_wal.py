@@ -631,10 +631,10 @@ class TestChunkBatching:
         assert len(files) == 1
 
         with open(files[0]) as f:
-            lines = [l.strip() for l in f if l.strip()]
+            lines = [line.strip() for line in f if line.strip()]
 
         assert len(lines) == 10
-        entries = [json.loads(l) for l in lines]
+        entries = [json.loads(line) for line in lines]
         seqs = [e['seq'] for e in entries]
         assert seqs == list(range(10))
 
@@ -685,7 +685,7 @@ class TestChunkBatching:
 
         def read_seqs(path):
             with open(path) as f:
-                return [json.loads(l)['seq'] for l in f if l.strip()]
+                return [json.loads(line)['seq'] for line in f if line.strip()]
 
         seqs1 = read_seqs(files[0])
         seqs2 = read_seqs(files[1])
