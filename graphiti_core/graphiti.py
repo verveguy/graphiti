@@ -1103,15 +1103,16 @@ class Graphiti:
                 )
 
                 # Process and save episode data (including saga association if provided)
-                episodic_edges, episode = await self._process_episode_data(
-                    episode,
-                    hydrated_nodes,
-                    entity_edges,
-                    now,
-                    group_id,
-                    saga,
-                    saga_previous_episode_uuid,
-                )
+                async with self.driver.wal_chunk():
+                    episodic_edges, episode = await self._process_episode_data(
+                        episode,
+                        hydrated_nodes,
+                        entity_edges,
+                        now,
+                        group_id,
+                        saga,
+                        saga_previous_episode_uuid,
+                    )
 
                 # Incrementally update brute-force search caches with newly saved data
                 from graphiti_core.search.search_utils import update_embedding_cache
