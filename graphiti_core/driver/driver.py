@@ -21,7 +21,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Coroutine
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -131,6 +131,16 @@ class GraphDriver(QueryExecutor, ABC):
     def clone(self, database: str) -> GraphDriver:
         """Clone the driver with a different database or graph name."""
         return self
+
+    def wal_chunk(self):
+        """Return a context manager that brackets a WAL chunk.
+
+        The base implementation returns a no-op context so callers can always
+        write ``async with self.driver.wal_chunk():`` without checking the
+        driver type. Drivers that support WAL batching (e.g. LadybugDriver)
+        override this to return WalWriter.chunk().
+        """
+        return nullcontext()
 
     def build_fulltext_query(
         self, query: str, group_ids: list[str] | None = None, max_query_length: int = 128
