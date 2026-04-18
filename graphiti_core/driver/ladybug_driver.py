@@ -20,14 +20,20 @@ if TYPE_CHECKING:
     from graphiti_core.driver.wal import WalWriter
 
 from graphiti_core.driver.driver import GraphDriver, GraphDriverSession, GraphProvider
-from graphiti_core.driver.ladybug.operations.community_edge_ops import LadybugCommunityEdgeOperations
-from graphiti_core.driver.ladybug.operations.community_node_ops import LadybugCommunityNodeOperations
+from graphiti_core.driver.ladybug.operations.community_edge_ops import (
+    LadybugCommunityEdgeOperations,
+)
+from graphiti_core.driver.ladybug.operations.community_node_ops import (
+    LadybugCommunityNodeOperations,
+)
 from graphiti_core.driver.ladybug.operations.entity_edge_ops import LadybugEntityEdgeOperations
 from graphiti_core.driver.ladybug.operations.entity_node_ops import LadybugEntityNodeOperations
 from graphiti_core.driver.ladybug.operations.episode_node_ops import LadybugEpisodeNodeOperations
 from graphiti_core.driver.ladybug.operations.episodic_edge_ops import LadybugEpisodicEdgeOperations
 from graphiti_core.driver.ladybug.operations.graph_ops import LadybugGraphMaintenanceOperations
-from graphiti_core.driver.ladybug.operations.has_episode_edge_ops import LadybugHasEpisodeEdgeOperations
+from graphiti_core.driver.ladybug.operations.has_episode_edge_ops import (
+    LadybugHasEpisodeEdgeOperations,
+)
 from graphiti_core.driver.ladybug.operations.next_episode_edge_ops import (
     LadybugNextEpisodeEdgeOperations,
 )
@@ -523,7 +529,7 @@ async def replay_wal_ladybug(
     errors = 0
 
     def _replay_batch(
-        conn: 'ladybug.Connection',
+        conn: ladybug.Connection,
         mutations: list[tuple[int, str, dict]],
     ) -> tuple[int, int]:
         """Replay a batch in a single transaction with binary-split retry."""
