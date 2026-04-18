@@ -162,6 +162,7 @@ async def test_resolve_extracted_edges_keeps_unknown_names(monkeypatch):
 
     monkeypatch.setattr(edge_ops, 'create_entity_edge_embeddings', AsyncMock(return_value=None))
     monkeypatch.setattr(EntityEdge, 'get_between_nodes', AsyncMock(return_value=[]))
+    monkeypatch.setattr(EntityEdge, 'get_by_node_uuid', AsyncMock(return_value=[]))
 
     async def immediate_gather(*aws, max_coroutines=None):
         return [await aw for aw in aws]
@@ -338,6 +339,7 @@ async def test_resolve_extracted_edges_fast_path_deduplication(monkeypatch):
 
     monkeypatch.setattr(edge_ops, 'create_entity_edge_embeddings', AsyncMock(return_value=None))
     monkeypatch.setattr(EntityEdge, 'get_between_nodes', AsyncMock(return_value=[]))
+    monkeypatch.setattr(EntityEdge, 'get_by_node_uuid', AsyncMock(return_value=[]))
 
     # Track how many times resolve_extracted_edge is called
     resolve_call_count = 0
