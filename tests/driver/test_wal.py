@@ -704,3 +704,40 @@ class TestChunkBatching:
                     pass
 
         await writer.close()
+
+    @pytest.mark.asyncio
+    async def test_chunk_flush_rotates_open_non_chunk_file(self, wal_dir):
+        """Non-chunk write followed by a chunk flush must not truncate the non-chunk file.
+
+        _get_current_filename() uses a second-resolution timestamp + _file_seq.
+        Without an explicit rotation before the chunk flush, both the non-chunk
+        file and the chunk file would share the same name on fast hardware, and
+        the 'w'-mode chunk open would silently destroy the non-chunk data.
+        """
+        writer = WalWriter(wal_dir)
+
+        # Non-chunk write: opens a file at _file_seq=0
+        await writer.log_mutation('CREATE (n:Before)', {}, 'db')
+
+        # Chunk: should rotate the open file and flush to a separate new file
+        async with writer.chunk():
+            for i in range(3):
+                await writer.log_mutation(f'CREATE (n:Chunk{i})', {}, 'db')
+
+        await writer.close()
+
+        files = sorted(wal_dir.glob('*.jsonl'))
+        # Must be exactly 2 files: one for the non-chunk write, one for the chunk
+        assert len(files) == 2, f'Expected 2 files but got {len(files)}: {files}'
+
+        def read_cyphers(path):
+            with open(path) as f:
+                return [json.loads(line)['cypher'] for line in f if line.strip()]
+
+        cyphers0 = read_cyphers(files[0])
+        cyphers1 = read_cyphers(files[1])
+
+        # First file must contain only the non-chunk write (not truncated by the chunk)
+        assert cyphers0 == ['CREATE (n:Before)'], f'Non-chunk file corrupted: {cyphers0}'
+        # Second file must contain all chunk mutations
+        assert len(cyphers1) == 3, f'Chunk file has wrong line count: {cyphers1}'

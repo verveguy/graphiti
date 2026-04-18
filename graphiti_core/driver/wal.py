@@ -236,6 +236,13 @@ class WalWriter:
         if not self._chunk_buffer:
             return
 
+        # Rotate any open non-chunk file first: _get_current_filename() embeds a
+        # second-resolution timestamp plus _file_seq, so without rotation the chunk
+        # and the in-flight non-chunk file can share the same name, causing the
+        # 'w'-mode chunk open to truncate the non-chunk data.
+        if self._file is not None:
+            self._rotate_file()
+
         filename = self._get_current_filename()
         with open(filename, 'w', encoding='utf-8') as f:  # noqa: SIM115
             for line in self._chunk_buffer:
