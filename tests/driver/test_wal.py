@@ -609,3 +609,98 @@ class TestWalWriterRefCounting:
         assert len(lines) == 2
         assert json.loads(lines[0])['cypher'] == 'CREATE (n:A)'
         assert json.loads(lines[1])['cypher'] == 'CREATE (n:B)'
+
+
+class TestChunkBatching:
+    """Test WalWriter.chunk() context manager for chunk-level WAL batching."""
+
+    @pytest.fixture
+    def wal_dir(self, tmp_path):
+        return tmp_path / 'wal'
+
+    @pytest.mark.asyncio
+    async def test_chunk_flush_creates_single_file(self, wal_dir):
+        """10 mutations inside a chunk context produce exactly 1 JSONL file with 10 lines."""
+        writer = WalWriter(wal_dir, max_events_per_file=3)  # low limit to prove no rotation
+        async with writer.chunk():
+            for i in range(10):
+                await writer.log_mutation(f'CREATE (n:Test{i})', {}, 'db')
+        await writer.close()
+
+        files = list(wal_dir.glob('*.jsonl'))
+        assert len(files) == 1
+
+        with open(files[0]) as f:
+            lines = [l.strip() for l in f if l.strip()]
+
+        assert len(lines) == 10
+        entries = [json.loads(l) for l in lines]
+        seqs = [e['seq'] for e in entries]
+        assert seqs == list(range(10))
+
+    @pytest.mark.asyncio
+    async def test_chunk_exception_discards_buffer(self, wal_dir):
+        """Exception inside chunk context discards the buffer — no file is written."""
+        writer = WalWriter(wal_dir)
+
+        with pytest.raises(ValueError):
+            async with writer.chunk():
+                await writer.log_mutation('CREATE (n:Test)', {}, 'db')
+                raise ValueError('simulated failure')
+
+        await writer.close()
+
+        files = list(wal_dir.glob('*.jsonl'))
+        assert len(files) == 0
+
+    @pytest.mark.asyncio
+    async def test_non_chunk_writes_immediate(self, wal_dir):
+        """Mutations outside a chunk context are written immediately to disk."""
+        writer = WalWriter(wal_dir)
+        await writer.log_mutation('CREATE (n:Test)', {}, 'db')
+
+        # File must exist before any chunk is ever started
+        files = list(wal_dir.glob('*.jsonl'))
+        assert len(files) == 1
+
+        await writer.close()
+
+    @pytest.mark.asyncio
+    async def test_sequence_monotonic_across_chunks(self, wal_dir):
+        """Sequence numbers in the second chunk are strictly higher than the first chunk."""
+        writer = WalWriter(wal_dir)
+
+        async with writer.chunk():
+            for _ in range(3):
+                await writer.log_mutation('CREATE (n:A)', {}, 'db')
+
+        async with writer.chunk():
+            for _ in range(3):
+                await writer.log_mutation('CREATE (n:B)', {}, 'db')
+
+        await writer.close()
+
+        files = sorted(wal_dir.glob('*.jsonl'))
+        assert len(files) == 2
+
+        def read_seqs(path):
+            with open(path) as f:
+                return [json.loads(l)['seq'] for l in f if l.strip()]
+
+        seqs1 = read_seqs(files[0])
+        seqs2 = read_seqs(files[1])
+        assert seqs1 == [0, 1, 2]
+        assert seqs2 == [3, 4, 5]
+        assert max(seqs1) < min(seqs2)
+
+    @pytest.mark.asyncio
+    async def test_nested_chunk_raises_runtime_error(self, wal_dir):
+        """Starting a chunk inside an active chunk raises RuntimeError."""
+        writer = WalWriter(wal_dir)
+
+        with pytest.raises(RuntimeError, match='Cannot start a chunk'):
+            async with writer.chunk():
+                async with writer.chunk():
+                    pass
+
+        await writer.close()
