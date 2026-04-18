@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -299,6 +300,17 @@ class LadybugDriver(GraphDriver):
         """Rotate the WAL file, closing the current tip file."""
         if self._wal is not None:
             await self._wal.rotate()
+
+    def wal_chunk(self):
+        """Return a WAL chunk context manager for batching mutations per episode.
+
+        Returns WalWriter.chunk() when WAL is enabled, otherwise a no-op context.
+        All mutations executed inside the context are buffered and flushed to a
+        single JSONL file on clean exit; discarded on exception.
+        """
+        if self._wal is not None:
+            return self._wal.chunk()
+        return nullcontext()
 
     async def delete_all_indexes(self) -> None:
         """No-op for LadybugDB; required to satisfy GraphDriver interface."""
