@@ -1272,126 +1272,127 @@ class Graphiti:
                     for episode in bulk_episodes
                 ]
 
-                # Save all episodes
-                await add_nodes_and_edges_bulk(
-                    driver=self.driver,
-                    episodic_nodes=episodes,
-                    episodic_edges=[],
-                    entity_nodes=[],
-                    entity_edges=[],
-                    embedder=self.embedder,
-                )
-
-                # Get previous episode context for each episode
-                episode_context = await retrieve_previous_episodes_bulk(self.driver, episodes)
-
-                # Extract and dedupe nodes and edges
-                (
-                    nodes_by_episode,
-                    uuid_map,
-                    extracted_edges_bulk,
-                ) = await self._extract_and_dedupe_nodes_bulk(
-                    episode_context,
-                    edge_type_map or edge_type_map_default,
-                    edge_types,
-                    entity_types,
-                    excluded_entity_types,
-                    custom_extraction_instructions,
-                )
-
-                # Create Episodic Edges
-                episodic_edges: list[EpisodicEdge] = []
-                for episode_uuid, nodes in nodes_by_episode.items():
-                    episodic_edges.extend(build_episodic_edges(nodes, episode_uuid, now))
-
-                # Re-map edge pointers and dedupe edges
-                extracted_edges_bulk_updated: list[list[EntityEdge]] = [
-                    resolve_edge_pointers(edges, uuid_map) for edges in extracted_edges_bulk
-                ]
-
-                edges_by_episode = await dedupe_edges_bulk(
-                    self.clients,
-                    extracted_edges_bulk_updated,
-                    episode_context,
-                    [],
-                    edge_types or {},
-                    edge_type_map or edge_type_map_default,
-                )
-
-                # Resolve nodes and edges against the existing graph
-                (
-                    final_hydrated_nodes,
-                    resolved_edges,
-                    invalidated_edges,
-                    final_uuid_map,
-                ) = await self._resolve_nodes_and_edges_bulk(
-                    nodes_by_episode,
-                    edges_by_episode,
-                    episode_context,
-                    entity_types,
-                    edge_types,
-                    edge_type_map or edge_type_map_default,
-                    episodes,
-                )
-
-                # Resolved pointers for episodic edges
-                resolved_episodic_edges = resolve_edge_pointers(episodic_edges, final_uuid_map)
-
-                # save data to KG
-                await add_nodes_and_edges_bulk(
-                    self.driver,
-                    episodes,
-                    resolved_episodic_edges,
-                    final_hydrated_nodes,
-                    resolved_edges + invalidated_edges,
-                    self.embedder,
-                )
-
-                # Handle saga association if provided
-                if saga is not None:
-                    # Get or create saga node based on input type
-                    if isinstance(saga, str):
-                        saga_node = await self._get_or_create_saga(saga, group_id, now)
-                    else:
-                        saga_node = saga
-
-                    # Sort episodes by valid_at to create NEXT_EPISODE chain in correct order
-                    sorted_episodes = sorted(episodes, key=lambda e: e.valid_at)
-
-                    # Find the most recent episode already in the saga
-                    previous_episode_uuid = await self._saga_get_previous_episode_uuid(
-                        saga_node.uuid, ''
+                async with self.driver.wal_chunk():
+                    # Save all episodes
+                    await add_nodes_and_edges_bulk(
+                        driver=self.driver,
+                        episodic_nodes=episodes,
+                        episodic_edges=[],
+                        entity_nodes=[],
+                        entity_edges=[],
+                        embedder=self.embedder,
                     )
 
-                    for episode in sorted_episodes:
-                        # Create NEXT_EPISODE edge from the previous episode
-                        if previous_episode_uuid is not None:
-                            next_episode_edge = NextEpisodeEdge(
-                                source_node_uuid=previous_episode_uuid,
+                    # Get previous episode context for each episode
+                    episode_context = await retrieve_previous_episodes_bulk(self.driver, episodes)
+
+                    # Extract and dedupe nodes and edges
+                    (
+                        nodes_by_episode,
+                        uuid_map,
+                        extracted_edges_bulk,
+                    ) = await self._extract_and_dedupe_nodes_bulk(
+                        episode_context,
+                        edge_type_map or edge_type_map_default,
+                        edge_types,
+                        entity_types,
+                        excluded_entity_types,
+                        custom_extraction_instructions,
+                    )
+
+                    # Create Episodic Edges
+                    episodic_edges: list[EpisodicEdge] = []
+                    for episode_uuid, nodes in nodes_by_episode.items():
+                        episodic_edges.extend(build_episodic_edges(nodes, episode_uuid, now))
+
+                    # Re-map edge pointers and dedupe edges
+                    extracted_edges_bulk_updated: list[list[EntityEdge]] = [
+                        resolve_edge_pointers(edges, uuid_map) for edges in extracted_edges_bulk
+                    ]
+
+                    edges_by_episode = await dedupe_edges_bulk(
+                        self.clients,
+                        extracted_edges_bulk_updated,
+                        episode_context,
+                        [],
+                        edge_types or {},
+                        edge_type_map or edge_type_map_default,
+                    )
+
+                    # Resolve nodes and edges against the existing graph
+                    (
+                        final_hydrated_nodes,
+                        resolved_edges,
+                        invalidated_edges,
+                        final_uuid_map,
+                    ) = await self._resolve_nodes_and_edges_bulk(
+                        nodes_by_episode,
+                        edges_by_episode,
+                        episode_context,
+                        entity_types,
+                        edge_types,
+                        edge_type_map or edge_type_map_default,
+                        episodes,
+                    )
+
+                    # Resolved pointers for episodic edges
+                    resolved_episodic_edges = resolve_edge_pointers(episodic_edges, final_uuid_map)
+
+                    # save data to KG
+                    await add_nodes_and_edges_bulk(
+                        self.driver,
+                        episodes,
+                        resolved_episodic_edges,
+                        final_hydrated_nodes,
+                        resolved_edges + invalidated_edges,
+                        self.embedder,
+                    )
+
+                    # Handle saga association if provided
+                    if saga is not None:
+                        # Get or create saga node based on input type
+                        if isinstance(saga, str):
+                            saga_node = await self._get_or_create_saga(saga, group_id, now)
+                        else:
+                            saga_node = saga
+
+                        # Sort episodes by valid_at to create NEXT_EPISODE chain in correct order
+                        sorted_episodes = sorted(episodes, key=lambda e: e.valid_at)
+
+                        # Find the most recent episode already in the saga
+                        previous_episode_uuid = await self._saga_get_previous_episode_uuid(
+                            saga_node.uuid, ''
+                        )
+
+                        for episode in sorted_episodes:
+                            # Create NEXT_EPISODE edge from the previous episode
+                            if previous_episode_uuid is not None:
+                                next_episode_edge = NextEpisodeEdge(
+                                    source_node_uuid=previous_episode_uuid,
+                                    target_node_uuid=episode.uuid,
+                                    group_id=group_id,
+                                    created_at=now,
+                                )
+                                await next_episode_edge.save(self.driver)
+
+                            # Create HAS_EPISODE edge from saga to episode
+                            has_episode_edge = HasEpisodeEdge(
+                                source_node_uuid=saga_node.uuid,
                                 target_node_uuid=episode.uuid,
                                 group_id=group_id,
                                 created_at=now,
                             )
-                            await next_episode_edge.save(self.driver)
+                            await has_episode_edge.save(self.driver)
 
-                        # Create HAS_EPISODE edge from saga to episode
-                        has_episode_edge = HasEpisodeEdge(
-                            source_node_uuid=saga_node.uuid,
-                            target_node_uuid=episode.uuid,
-                            group_id=group_id,
-                            created_at=now,
-                        )
-                        await has_episode_edge.save(self.driver)
+                            # Update previous_episode_uuid for the next iteration
+                            previous_episode_uuid = episode.uuid
 
-                        # Update previous_episode_uuid for the next iteration
-                        previous_episode_uuid = episode.uuid
-
-                    # Track first and last episode on the saga node
-                    if sorted_episodes:
-                        if saga_node.first_episode_uuid is None:
-                            saga_node.first_episode_uuid = sorted_episodes[0].uuid
-                        saga_node.last_episode_uuid = sorted_episodes[-1].uuid
-                        await saga_node.save(self.driver)
+                        # Track first and last episode on the saga node
+                        if sorted_episodes:
+                            if saga_node.first_episode_uuid is None:
+                                saga_node.first_episode_uuid = sorted_episodes[0].uuid
+                            saga_node.last_episode_uuid = sorted_episodes[-1].uuid
+                            await saga_node.save(self.driver)
 
                 end = time()
 
