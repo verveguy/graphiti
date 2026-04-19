@@ -941,22 +941,15 @@ def test_build_dedup_search_filter_untyped_node():
     assert result.node_labels is None
 
 
-def test_build_dedup_search_filter_invalid_label_falls_back(monkeypatch):
-    from graphiti_core.errors import NodeLabelValidationError
-
-    original_init = SearchFilters.__init__
-
-    call_count = [0]
-
-    def raising_init(self, **kwargs):
-        call_count[0] += 1
-        if kwargs.get('node_labels'):
-            raise NodeLabelValidationError(kwargs['node_labels'])
-        original_init(self, **kwargs)
-
-    monkeypatch.setattr(SearchFilters, '__init__', raising_init)
-
-    node = EntityNode(name='Test', group_id='group', labels=['Entity', 'Person'])
+def test_build_dedup_search_filter_invalid_label_falls_back():
+    # model_construct bypasses EntityNode validation so we can inject an invalid label
+    # (contains a space — fails SAFE_CYPHER_IDENTIFIER_PATTERN). SearchFilters raises
+    # pydantic.ValidationError (wrapping NodeLabelValidationError) which must be caught.
+    node = EntityNode.model_construct(
+        name='Test',
+        group_id='group',
+        labels=['Entity', 'Invalid Label'],
+    )
     result = _build_dedup_search_filter(node)
     assert result.node_labels is None
 
