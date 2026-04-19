@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable
 from time import time
 from typing import Any, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from graphiti_core.edges import EntityEdge
 from graphiti_core.errors import NodeLabelValidationError
@@ -387,8 +387,10 @@ def _build_dedup_search_filter(node: EntityNode) -> SearchFilters:
     if not specific_labels:
         return SearchFilters()
     try:
-        return SearchFilters(node_labels=specific_labels)
-    except NodeLabelValidationError:
+        # Use the first specific label only: multi-label filters have inconsistent semantics
+        # across backends (OR on Neo4j/FalkorDB vs AND on Ladybug).
+        return SearchFilters(node_labels=[specific_labels[0]])
+    except (NodeLabelValidationError, ValidationError):
         return SearchFilters()
 
 
