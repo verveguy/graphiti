@@ -265,7 +265,7 @@ class AnthropicClient(LLMClient):
         # 3. Use model-specific maximum or return DEFAULT_ANTHROPIC_MAX_TOKENS
         return self._get_max_tokens_for_model(model)
 
-    async def _generate_response(
+    async def _generate_response(  # type: ignore[override]
         self,
         messages: list[Message],
         response_model: type[BaseModel] | None = None,
