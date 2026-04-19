@@ -265,7 +265,7 @@ class AnthropicClient(LLMClient):
         # 3. Use model-specific maximum or return DEFAULT_ANTHROPIC_MAX_TOKENS
         return self._get_max_tokens_for_model(model)
 
-    async def _generate_response(  # type: ignore[override]
+    async def _call_anthropic_api(
         self,
         messages: list[Message],
         response_model: type[BaseModel] | None = None,
@@ -273,7 +273,11 @@ class AnthropicClient(LLMClient):
         model_size: ModelSize = ModelSize.medium,
     ) -> tuple[dict[str, typing.Any], int, int, int, int]:
         """
-        Generate a response from the Anthropic LLM using tool-based approach for all requests.
+        Make a single Anthropic API call and return the response with token counts.
+
+        This is the internal method used by generate_response. It returns a 5-tuple
+        rather than just a dict so that generate_response can accumulate cache token
+        counts across retries.
 
         Args:
             messages: List of message objects to send to the LLM.
@@ -382,6 +386,19 @@ class AnthropicClient(LLMClient):
         except Exception as e:
             raise e
 
+    async def _generate_response(
+        self,
+        messages: list[Message],
+        response_model: type[BaseModel] | None = None,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        model_size: ModelSize = ModelSize.medium,
+    ) -> dict[str, typing.Any]:
+        """Satisfy the LLMClient abstract interface. Use generate_response for full usage."""
+        response_dict, _, _, _, _ = await self._call_anthropic_api(
+            messages, response_model, max_tokens, model_size
+        )
+        return response_dict
+
     async def generate_response(
         self,
         messages: list[Message],
@@ -440,7 +457,7 @@ class AnthropicClient(LLMClient):
                         output_tokens,
                         cache_creation_tokens,
                         cache_read_tokens,
-                    ) = await self._generate_response(
+                    ) = await self._call_anthropic_api(
                         messages, response_model, max_tokens, model_size
                     )
                     total_input_tokens += input_tokens
