@@ -703,3 +703,148 @@ async def test_extract_edges_keeps_valid_edges_with_same_name_different_nodes(mo
     assert len(edges) == 1
     assert edges[0].source_node_uuid == 'alice_uuid'
     assert edges[0].target_node_uuid == 'paris_uuid'
+
+
+# ---------------------------------------------------------------------------
+# Stage 1 dedup similarity pre-filter tests
+# ---------------------------------------------------------------------------
+
+def _make_edge(fact: str, embedding: list[float] | None = None) -> EntityEdge:
+    return EntityEdge(
+        source_node_uuid='source_uuid',
+        target_node_uuid='target_uuid',
+        name='test_edge',
+        group_id='group_1',
+        fact=fact,
+        episodes=[],
+        created_at=datetime.now(timezone.utc),
+        valid_at=None,
+        invalid_at=None,
+        fact_embedding=embedding,
+    )
+
+
+def _make_episode() -> EpisodicNode:
+    return EpisodicNode(
+        uuid='ep_uuid',
+        name='Episode',
+        group_id='group_1',
+        source='message',
+        source_description='desc',
+        content='episode content',
+        valid_at=datetime.now(timezone.utc),
+    )
+
+
+@pytest.mark.asyncio
+async def test_dedup_prefilter_all_below_threshold_skips_llm(mock_llm_client):
+    """All related_edges below DEDUP_SIM_THRESHOLD → stage 1 LLM not called."""
+    extracted = _make_edge('User likes yoga', embedding=[1.0, 0.0])
+    # Orthogonal → cosine sim = 0.0, below 0.5
+    related = [_make_edge('Something unrelated', embedding=[0.0, 1.0])]
+
+    resolved, invalidated, duplicates = await resolve_extracted_edge(
+        mock_llm_client,
+        extracted,
+        related,
+        [],
+        _make_episode(),
+        edge_type_candidates=None,
+    )
+
+    mock_llm_client.generate_response.assert_not_called()
+    assert resolved is extracted
+    assert invalidated == []
+    assert duplicates == []
+
+
+@pytest.mark.asyncio
+async def test_dedup_prefilter_all_above_threshold_calls_llm(mock_llm_client):
+    """All related_edges above DEDUP_SIM_THRESHOLD → stage 1 LLM called."""
+    mock_llm_client.generate_response.return_value = {
+        'duplicate_facts': [],
+        'contradicted_facts': [],
+    }
+
+    extracted = _make_edge('User likes yoga', embedding=[1.0, 0.0])
+    # Parallel → cosine sim ≈ 1.0, above 0.5
+    related = [
+        _make_edge('User enjoys yoga', embedding=[0.9, 0.1]),
+        _make_edge('User practices yoga', embedding=[0.8, 0.1]),
+    ]
+
+    resolved, invalidated, duplicates = await resolve_extracted_edge(
+        mock_llm_client,
+        extracted,
+        related,
+        [],
+        _make_episode(),
+        edge_type_candidates=None,
+    )
+
+    mock_llm_client.generate_response.assert_called_once()
+    assert resolved is extracted
+    assert invalidated == []
+    assert duplicates == []
+
+
+@pytest.mark.asyncio
+async def test_dedup_prefilter_mixed_candidates_calls_llm_with_filtered_list(mock_llm_client):
+    """Mixed similarity → LLM called; low-sim candidate is not passed through."""
+    # Return duplicate_facts=[0] — resolves to index 0 of the filtered list
+    mock_llm_client.generate_response.return_value = {
+        'duplicate_facts': [0],
+        'contradicted_facts': [],
+    }
+
+    extracted = _make_edge('User likes yoga', embedding=[1.0, 0.0])
+    # low_sim is first in the list; high_sim is second
+    low_sim = _make_edge('Completely different', embedding=[0.0, 1.0])   # cosine = 0.0 → filtered out
+    high_sim = _make_edge('User enjoys yoga', embedding=[0.9, 0.1])       # cosine ≈ 0.994 → passes
+
+    resolved, invalidated, duplicates = await resolve_extracted_edge(
+        mock_llm_client,
+        extracted,
+        [low_sim, high_sim],
+        [],
+        _make_episode(),
+        edge_type_candidates=None,
+    )
+
+    mock_llm_client.generate_response.assert_called_once()
+    # duplicate_facts=[0] resolves to high_sim (index 0 after filter drops low_sim)
+    assert resolved.uuid == high_sim.uuid
+    assert len(duplicates) == 1
+    assert duplicates[0].uuid == high_sim.uuid
+
+
+@pytest.mark.asyncio
+async def test_dedup_prefilter_none_embedding_warns_and_passes_all(mock_llm_client, caplog):
+    """None fact_embedding on extracted edge → WARNING logged, all candidates passed to LLM."""
+    import logging
+    mock_llm_client.generate_response.return_value = {
+        'duplicate_facts': [],
+        'contradicted_facts': [],
+    }
+
+    extracted = _make_edge('User likes yoga', embedding=None)  # None embedding
+    related = [
+        _make_edge('User enjoys yoga', embedding=[1.0, 0.0]),
+        _make_edge('User practices yoga', embedding=[0.9, 0.1]),
+    ]
+
+    with caplog.at_level(logging.WARNING):
+        resolved, invalidated, duplicates = await resolve_extracted_edge(
+            mock_llm_client,
+            extracted,
+            related,
+            [],
+            _make_episode(),
+            edge_type_candidates=None,
+        )
+
+    assert any('fact_embedding is None' in r.message for r in caplog.records)
+    # LLM should be called with all 2 candidates (no filtering occurred)
+    mock_llm_client.generate_response.assert_called_once()
+    assert resolved is extracted
+    assert duplicates == []
