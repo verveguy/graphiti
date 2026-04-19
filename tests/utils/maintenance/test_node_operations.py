@@ -6,6 +6,7 @@ import pytest
 
 from graphiti_core.graphiti_types import GraphitiClients
 from graphiti_core.nodes import EntityNode, EpisodeType, EpisodicNode
+from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.datetime_utils import utc_now
 from graphiti_core.utils.maintenance.dedup_helpers import (
     DedupCandidateIndexes,
@@ -24,9 +25,12 @@ from graphiti_core.utils.maintenance.dedup_helpers import (
     _shingles,
 )
 from graphiti_core.utils.maintenance.node_operations import (
+    NODE_DEDUP_CANDIDATE_LIMIT,
+    _build_dedup_search_filter,
     _collect_candidate_nodes,
     _extract_entity_summaries_batch,
     _resolve_with_llm,
+    _semantic_candidate_search,
     extract_attributes_from_nodes,
     resolve_extracted_nodes,
 )
@@ -918,3 +922,192 @@ async def test_batch_summaries_calls_llm_for_long_summary():
     # LLM should have been called to condense the long summary
     llm_client.generate_response.assert_awaited_once()
     assert node.summary == 'Condensed summary'
+
+
+# ---------------------------------------------------------------------------
+# _build_dedup_search_filter tests (Task 5)
+# ---------------------------------------------------------------------------
+
+
+def test_build_dedup_search_filter_typed_node():
+    node = EntityNode(name='Alice', group_id='group', labels=['Entity', 'Person'])
+    result = _build_dedup_search_filter(node)
+    assert result.node_labels == ['Person']
+
+
+def test_build_dedup_search_filter_untyped_node():
+    node = EntityNode(name='Thing', group_id='group', labels=['Entity'])
+    result = _build_dedup_search_filter(node)
+    assert result.node_labels is None
+
+
+def test_build_dedup_search_filter_invalid_label_falls_back(monkeypatch):
+    from graphiti_core.errors import NodeLabelValidationError
+
+    original_init = SearchFilters.__init__
+
+    call_count = [0]
+
+    def raising_init(self, **kwargs):
+        call_count[0] += 1
+        if kwargs.get('node_labels'):
+            raise NodeLabelValidationError(kwargs['node_labels'])
+        original_init(self, **kwargs)
+
+    monkeypatch.setattr(SearchFilters, '__init__', raising_init)
+
+    node = EntityNode(name='Test', group_id='group', labels=['Entity', 'Person'])
+    result = _build_dedup_search_filter(node)
+    assert result.node_labels is None
+
+
+# ---------------------------------------------------------------------------
+# _semantic_candidate_search tests (Task 6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_semantic_candidate_search_hnsw_results_before_bm25(monkeypatch):
+    """HNSW results appear before BM25-only results in merged output."""
+    hnsw_node = EntityNode(name='HNSW Node', group_id='group', labels=['Entity'])
+    bm25_node = EntityNode(name='BM25 Node', group_id='group', labels=['Entity'])
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_similarity_search',
+        AsyncMock(return_value=[hnsw_node]),
+    )
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_fulltext_search',
+        AsyncMock(return_value=[bm25_node]),
+    )
+
+    clients, _ = _make_clients()
+    clients.embedder.create_batch = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
+
+    extracted = EntityNode(name='Test', group_id='group', labels=['Entity'])
+    results = await _semantic_candidate_search(clients, [extracted])
+
+    assert len(results) == 1
+    assert results[0][0].uuid == hnsw_node.uuid
+    assert results[0][1].uuid == bm25_node.uuid
+
+
+@pytest.mark.asyncio
+async def test_semantic_candidate_search_uuid_deduplication(monkeypatch):
+    """A node appearing in both HNSW and BM25 results is included only once."""
+    shared = EntityNode(name='Shared', group_id='group', labels=['Entity'])
+    bm25_only = EntityNode(name='BM25 Only', group_id='group', labels=['Entity'])
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_similarity_search',
+        AsyncMock(return_value=[shared]),
+    )
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_fulltext_search',
+        AsyncMock(return_value=[shared, bm25_only]),
+    )
+
+    clients, _ = _make_clients()
+    clients.embedder.create_batch = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
+
+    extracted = EntityNode(name='Test', group_id='group', labels=['Entity'])
+    results = await _semantic_candidate_search(clients, [extracted])
+
+    uuids = [n.uuid for n in results[0]]
+    assert len(uuids) == 2
+    assert uuids[0] == shared.uuid
+    assert uuids[1] == bm25_only.uuid
+
+
+@pytest.mark.asyncio
+async def test_semantic_candidate_search_capped_at_limit(monkeypatch):
+    """Merged results are capped at NODE_DEDUP_CANDIDATE_LIMIT."""
+    hnsw_nodes = [
+        EntityNode(name=f'H{i}', group_id='group', labels=['Entity'])
+        for i in range(NODE_DEDUP_CANDIDATE_LIMIT)
+    ]
+    bm25_nodes = [
+        EntityNode(name=f'B{i}', group_id='group', labels=['Entity'])
+        for i in range(NODE_DEDUP_CANDIDATE_LIMIT)
+    ]
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_similarity_search',
+        AsyncMock(return_value=hnsw_nodes),
+    )
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_fulltext_search',
+        AsyncMock(return_value=bm25_nodes),
+    )
+
+    clients, _ = _make_clients()
+    clients.embedder.create_batch = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
+
+    extracted = EntityNode(name='Test', group_id='group', labels=['Entity'])
+    results = await _semantic_candidate_search(clients, [extracted])
+
+    assert len(results[0]) == NODE_DEDUP_CANDIDATE_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_semantic_candidate_search_untyped_node_uses_unfiltered_search(monkeypatch):
+    """An untyped node (only 'Entity' label) passes SearchFilters() with no label filter."""
+    captured_filters: list[SearchFilters] = []
+
+    async def capturing_hnsw(driver, query_vector, search_filter, group_ids, limit, min_score):
+        captured_filters.append(search_filter)
+        return []
+
+    async def capturing_bm25(driver, query, search_filter, group_ids, limit):
+        captured_filters.append(search_filter)
+        return []
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_similarity_search',
+        capturing_hnsw,
+    )
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_fulltext_search',
+        capturing_bm25,
+    )
+
+    clients, _ = _make_clients()
+    clients.embedder.create_batch = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
+
+    extracted = EntityNode(name='Test', group_id='group', labels=['Entity'])
+    await _semantic_candidate_search(clients, [extracted])
+
+    assert len(captured_filters) == 2
+    assert all(f.node_labels is None for f in captured_filters)
+
+
+@pytest.mark.asyncio
+async def test_semantic_candidate_search_typed_node_uses_label_filter(monkeypatch):
+    """A typed node passes SearchFilters(node_labels=['Person']) to both search paths."""
+    captured_filters: list[SearchFilters] = []
+
+    async def capturing_hnsw(driver, query_vector, search_filter, group_ids, limit, min_score):
+        captured_filters.append(search_filter)
+        return []
+
+    async def capturing_bm25(driver, query, search_filter, group_ids, limit):
+        captured_filters.append(search_filter)
+        return []
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_similarity_search',
+        capturing_hnsw,
+    )
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_fulltext_search',
+        capturing_bm25,
+    )
+
+    clients, _ = _make_clients()
+    clients.embedder.create_batch = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
+
+    extracted = EntityNode(name='Alice', group_id='group', labels=['Entity', 'Person'])
+    await _semantic_candidate_search(clients, [extracted])
+
+    assert len(captured_filters) == 2
+    assert all(f.node_labels == ['Person'] for f in captured_filters)
