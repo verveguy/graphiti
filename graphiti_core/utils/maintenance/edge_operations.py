@@ -34,7 +34,7 @@ from graphiti_core.llm_client import LLMClient
 from graphiti_core.llm_client.config import ModelSize
 from graphiti_core.nodes import CommunityNode, EntityNode, EpisodicNode
 from graphiti_core.prompts import prompt_library
-from graphiti_core.prompts.dedupe_edges import EdgeDuplicate
+from graphiti_core.prompts.dedupe_edges import EdgeBatchResolutions, EdgeDuplicate
 from graphiti_core.prompts.extract_edges import Edge as ExtractedEdge
 from graphiti_core.prompts.extract_edges import ExtractedEdges
 from graphiti_core.search.search import search
@@ -49,6 +49,11 @@ logger = logging.getLogger(__name__)
 INVALIDATION_SIM_THRESHOLD = 0.3  # cosine similarity floor for invalidation candidates (stage 2)
 DEDUP_SIM_THRESHOLD = 0.5  # cosine similarity floor for dedup candidates (stage 1)
 
+# Maximum number of edges to include in a single batched Stage 1 LLM call.
+# At typical fact lengths (~50 tokens each) and 10 candidates per edge, 20 edges
+# keeps the prompt well within context limits (~10k tokens).
+EDGE_DEDUP_BATCH_SIZE = 20
+
 
 def _cosine_sim(a: list[float] | None, b: list[float] | None) -> float:
     if a is None or b is None or len(a) == 0 or len(b) == 0:
@@ -59,6 +64,31 @@ def _cosine_sim(a: list[float] | None, b: list[float] | None) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+async def _extract_edge_attributes(
+    llm_client: LLMClient,
+    edge: EntityEdge,
+    episode: EpisodicNode | None,
+    edge_type_candidates: dict[str, type[BaseModel]] | None,
+) -> None:
+    """Extract and set custom attributes on an edge using the appropriate edge type model."""
+    edge_model = edge_type_candidates.get(edge.name) if edge_type_candidates else None
+    if edge_model is not None and len(edge_model.model_fields) != 0:
+        edge_attributes_context = {
+            'fact': edge.fact,
+            'reference_time': episode.valid_at if episode is not None else None,
+            'existing_attributes': edge.attributes,
+        }
+        edge_attributes_response = await llm_client.generate_response(
+            prompt_library.extract_edges.extract_attributes(edge_attributes_context),
+            response_model=edge_model,  # type: ignore
+            model_size=ModelSize.small,
+            prompt_name='extract_edges.extract_attributes',
+        )
+        edge.attributes = edge_attributes_response
+    else:
+        edge.attributes = {}
 
 
 def build_episodic_edges(
@@ -481,55 +511,216 @@ async def resolve_extracted_edges(
 
         edge_types_lst.append(extracted_edge_types)
 
-    # resolve edges with related edges in the graph and find invalidation candidates
+    # =========================================================================
+    # FAST-PATH CLASSIFICATION + BATCHED STAGE 1 DEDUP
+    # =========================================================================
     t_llm_resolve = time()
-    results: list[tuple[EntityEdge, list[EntityEdge], list[EntityEdge]]] = list(
+
+    final_results: dict[int, tuple[EntityEdge, list[EntityEdge], list[EntityEdge]]] = {}
+    no_candidates_indices: list[int] = []   # both related and invalidation candidates empty
+    direct_stage2_indices: list[int] = []   # no dedup candidates but has invalidation candidates
+    batch_indices: list[int] = []           # need batched Stage 1
+    fast_path_exact_count = 0
+
+    for i, (extracted_edge, related_edges, inv_candidates) in enumerate(zip(
+        extracted_edges, related_edges_lists, edge_invalidation_candidates, strict=True
+    )):
+        # Fast path 1: no candidates at all — skip all LLM calls
+        if len(related_edges) == 0 and len(inv_candidates) == 0:
+            no_candidates_indices.append(i)
+            continue
+
+        # No dedup candidates but has invalidation candidates — skip Stage 1, go to Stage 2
+        if len(related_edges) == 0:
+            direct_stage2_indices.append(i)
+            continue
+
+        # Fast path 2: exact text match among related_edges — skip all LLM calls
+        normalized_fact = _normalize_string_exact(extracted_edge.fact)
+        matched: EntityEdge | None = None
+        for edge in related_edges:
+            if (
+                edge.source_node_uuid == extracted_edge.source_node_uuid
+                and edge.target_node_uuid == extracted_edge.target_node_uuid
+                and _normalize_string_exact(edge.fact) == normalized_fact
+            ):
+                matched = edge
+                break
+
+        if matched is not None:
+            if episode is not None and episode.uuid not in matched.episodes:
+                matched.episodes.append(episode.uuid)
+            final_results[i] = (matched, [], [])
+            fast_path_exact_count += 1
+            logger.debug(
+                'EDGE_RESOLVE_STAGE: edge %s — exact text match fast path', extracted_edge.uuid,
+            )
+            continue
+
+        batch_indices.append(i)
+
+    # Extract attributes for no-candidates edges (they are new, genuine edges)
+    if no_candidates_indices:
+        await semaphore_gather(*[
+            _extract_edge_attributes(llm_client, extracted_edges[i], episode, edge_types_lst[i])
+            for i in no_candidates_indices
+        ])
+    for i in no_candidates_indices:
+        final_results[i] = (extracted_edges[i], [], [])
+        logger.debug(
+            'EDGE_RESOLVE_STAGE: edge %s — no candidates fast path', extracted_edges[i].uuid,
+        )
+
+    logger.debug(
+        'EDGE_RESOLVE_STAGE: %d edges total — %d no-candidates, %d exact-match, '
+        '%d direct-stage2, %d queued for Stage 1 batch',
+        len(extracted_edges), len(no_candidates_indices), fast_path_exact_count,
+        len(direct_stage2_indices), len(batch_indices),
+    )
+
+    # =========================================================================
+    # BATCHED STAGE 1: Single LLM call per sub-batch to identify duplicates
+    # =========================================================================
+    stage1_duplicate_of: dict[int, int | None] = {i: None for i in batch_indices}
+
+    if batch_indices:
+        t_stage1 = time()
+        for batch_start in range(0, len(batch_indices), EDGE_DEDUP_BATCH_SIZE):
+            sub_batch_indices = batch_indices[batch_start: batch_start + EDGE_DEDUP_BATCH_SIZE]
+            batch_payload = [
+                {
+                    'edge_idx': batch_pos,
+                    'fact': extracted_edges[i].fact,
+                    'candidates': [
+                        {'candidate_idx': j, 'fact': e.fact}
+                        for j, e in enumerate(related_edges_lists[i])
+                    ],
+                }
+                for batch_pos, i in enumerate(sub_batch_indices)
+            ]
+            t_sub = time()
+            llm_response = await llm_client.generate_response(
+                prompt_library.dedupe_edges.resolve_edges_batch({'edges': batch_payload}),
+                response_model=EdgeBatchResolutions,
+                model_size=ModelSize.small,
+                prompt_name='dedupe_edges.resolve_edges_batch',
+            )
+            batch_response = EdgeBatchResolutions(**llm_response)
+            logger.debug(
+                'EDGE_RESOLVE_TIMING: Stage 1 sub-batch %d–%d (%d edges) in %.0f ms',
+                batch_start, batch_start + len(sub_batch_indices) - 1,
+                len(sub_batch_indices), (time() - t_sub) * 1000,
+            )
+
+            response_by_batch_pos: dict[int, int | None] = {}
+            for resolution in batch_response.edge_resolutions:
+                if 0 <= resolution.edge_idx < len(sub_batch_indices):
+                    dup_of = resolution.duplicate_of
+                    candidates_len = len(related_edges_lists[sub_batch_indices[resolution.edge_idx]])
+                    if dup_of is not None and not (0 <= dup_of < candidates_len):
+                        logger.warning(
+                            'EDGE_RESOLVE_STAGE1_BATCH: edge_idx=%d duplicate_of=%d out of range '
+                            '(candidates=%d), treating as non-duplicate',
+                            resolution.edge_idx, dup_of, candidates_len,
+                        )
+                        dup_of = None
+                    response_by_batch_pos[resolution.edge_idx] = dup_of
+                else:
+                    logger.warning(
+                        'EDGE_RESOLVE_STAGE1_BATCH: out-of-range edge_idx=%d in response '
+                        '(batch size=%d)',
+                        resolution.edge_idx, len(sub_batch_indices),
+                    )
+
+            for batch_pos, i in enumerate(sub_batch_indices):
+                if batch_pos not in response_by_batch_pos:
+                    logger.warning(
+                        'EDGE_RESOLVE_STAGE1_BATCH: missing edge_idx=%d in response '
+                        '(edge "%s"), treating as non-duplicate',
+                        batch_pos, extracted_edges[i].fact[:60],
+                    )
+                stage1_duplicate_of[i] = response_by_batch_pos.get(batch_pos)
+
+        logger.debug(
+            'EDGE_RESOLVE_TIMING: Stage 1 batched LLM (%d edges, %d sub-batches) in %.0f ms',
+            len(batch_indices),
+            (len(batch_indices) + EDGE_DEDUP_BATCH_SIZE - 1) // EDGE_DEDUP_BATCH_SIZE,
+            (time() - t_stage1) * 1000,
+        )
+
+    # Extract attributes for batch-identified duplicates and record their results
+    stage1_duplicate_indices = [i for i in batch_indices if stage1_duplicate_of[i] is not None]
+    stage2_indices = direct_stage2_indices + [
+        i for i in batch_indices if stage1_duplicate_of[i] is None
+    ]
+
+    if stage1_duplicate_indices:
+        await semaphore_gather(*[
+            _extract_edge_attributes(
+                llm_client,
+                related_edges_lists[i][stage1_duplicate_of[i]],  # type: ignore[index]
+                episode,
+                edge_types_lst[i],
+            )
+            for i in stage1_duplicate_indices
+        ])
+    for i in stage1_duplicate_indices:
+        dup_idx = stage1_duplicate_of[i]
+        resolved = related_edges_lists[i][dup_idx]  # type: ignore[index]
+        if episode is not None:
+            resolved.episodes.append(episode.uuid)
+        final_results[i] = (resolved, [], [resolved])
+        logger.debug(
+            'EDGE_RESOLVE_STAGE: edge %s — Stage 1 batch duplicate -> %s',
+            extracted_edges[i].uuid, resolved.uuid,
+        )
+
+    # =========================================================================
+    # STAGE 2: Run invalidation check in parallel for all non-duplicate edges
+    # =========================================================================
+    stage2_results_list: list[tuple[EntityEdge, list[EntityEdge], list[EntityEdge]]] = list(
         await semaphore_gather(
             *[
                 resolve_extracted_edge(
                     llm_client,
-                    extracted_edge,
-                    related_edges,
-                    existing_edges,
+                    extracted_edges[i],
+                    related_edges_lists[i],
+                    edge_invalidation_candidates[i],
                     episode,
-                    extracted_edge_types,
+                    edge_types_lst[i],
+                    _bypass_stage1=True,
                 )
-                for extracted_edge, related_edges, existing_edges, extracted_edge_types in zip(
-                    extracted_edges,
-                    related_edges_lists,
-                    edge_invalidation_candidates,
-                    edge_types_lst,
-                    strict=True,
-                )
+                for i in stage2_indices
             ]
         )
     )
+    for i, result in zip(stage2_indices, stage2_results_list, strict=True):
+        final_results[i] = result
 
-    logger.debug(
-        'EDGE_RESOLVE_TIMING: LLM resolve for %d edges in %.0f ms (%.0f ms/edge)',
-        len(extracted_edges),
-        (time() - t_llm_resolve) * 1000,
-        (time() - t_llm_resolve) * 1000 / max(len(extracted_edges), 1),
-    )
+    # Collect results in original order
+    results: list[tuple[EntityEdge, list[EntityEdge], list[EntityEdge]]] = [
+        final_results[i] for i in range(len(extracted_edges))
+    ]
 
-    # Count resolution outcomes
-    exact_match_count = sum(
-        1
-        for edge, result in zip(extracted_edges, results, strict=True)
-        if result[0].uuid != edge.uuid  # resolved to existing edge
-    )
-    no_op_invalidation_count = sum(
-        1
-        for result in results
-        if len(result[1]) == 0  # no invalidations
+    stage1_dedup_count = len(stage1_duplicate_indices)
+    fast_path_total = len(no_candidates_indices) + fast_path_exact_count
+    matched_existing_count = sum(
+        1 for edge, result in zip(extracted_edges, results, strict=True)
+        if result[0].uuid != edge.uuid
     )
     logger.debug(
-        'EDGE_RESOLVE_OUTCOMES: %d edges resolved: %d matched existing, %d new, %d with invalidations, %d no-op invalidation checks',
-        len(extracted_edges),
-        exact_match_count,
-        len(extracted_edges) - exact_match_count,
+        'EDGE_RESOLVE_TIMING: total LLM resolve for %d edges in %.0f ms '
+        '(%d fast-path, %d Stage 1 batch duplicates, %d Stage 2)',
+        len(extracted_edges), (time() - t_llm_resolve) * 1000,
+        fast_path_total, stage1_dedup_count, len(stage2_indices),
+    )
+    logger.debug(
+        'EDGE_RESOLVE_OUTCOMES: %d edges resolved: %d matched existing (%d batch-dedup, %d exact-match), '
+        '%d new, %d with invalidations',
+        len(extracted_edges), matched_existing_count,
+        stage1_dedup_count, fast_path_exact_count,
+        len(extracted_edges) - matched_existing_count,
         sum(1 for r in results if len(r[1]) > 0),
-        no_op_invalidation_count,
     )
 
     resolved_edges: list[EntityEdge] = []
@@ -604,6 +795,8 @@ async def resolve_extracted_edge(
     existing_edges: list[EntityEdge],
     episode: EpisodicNode,
     edge_type_candidates: dict[str, type[BaseModel]] | None = None,
+    *,
+    _bypass_stage1: bool = False,
 ) -> tuple[EntityEdge, list[EntityEdge], list[EntityEdge]]:
     """Resolve an extracted edge against existing graph context.
 
@@ -630,6 +823,10 @@ async def resolve_extracted_edge(
         Episode providing content context when extracting edge attributes.
     edge_type_candidates : dict[str, type[BaseModel]] | None
         Custom edge types permitted for the current source/target signature.
+    _bypass_stage1 : bool
+        Internal flag. When True, skip fast paths and Stage 1 (already handled
+        by the batched dedup in resolve_extracted_edges). Used only by
+        resolve_extracted_edges; external callers should not set this.
 
     Returns
     -------
@@ -638,130 +835,111 @@ async def resolve_extracted_edge(
     """
     start = time()
 
-    # --- Extract custom attributes helper ---
-    async def _extract_attributes(edge: EntityEdge) -> None:
-        edge_model = edge_type_candidates.get(edge.name) if edge_type_candidates else None
-        if edge_model is not None and len(edge_model.model_fields) != 0:
-            edge_attributes_context = {
-                'fact': edge.fact,
-                'reference_time': episode.valid_at if episode is not None else None,
-                'existing_attributes': edge.attributes,
-            }
-            edge_attributes_response = await llm_client.generate_response(
-                prompt_library.extract_edges.extract_attributes(edge_attributes_context),
-                response_model=edge_model,  # type: ignore
-                model_size=ModelSize.small,
-                prompt_name='extract_edges.extract_attributes',
+    if not _bypass_stage1:
+        # --- Fast path: no candidates at all ---
+        if len(related_edges) == 0 and len(existing_edges) == 0:
+            await _extract_edge_attributes(llm_client, extracted_edge, episode, edge_type_candidates)
+            logger.debug(
+                'EDGE_RESOLVE_STAGE: edge %s — no candidates, skipped both LLM calls (%.0f ms)',
+                extracted_edge.uuid, (time() - start) * 1000,
             )
-            edge.attributes = edge_attributes_response
+            return extracted_edge, [], []
+
+        # --- Fast path: exact text match ---
+        normalized_fact = _normalize_string_exact(extracted_edge.fact)
+        for edge in related_edges:
+            if (
+                edge.source_node_uuid == extracted_edge.source_node_uuid
+                and edge.target_node_uuid == extracted_edge.target_node_uuid
+                and _normalize_string_exact(edge.fact) == normalized_fact
+            ):
+                resolved = edge
+                if episode is not None and episode.uuid not in resolved.episodes:
+                    resolved.episodes.append(episode.uuid)
+                logger.debug(
+                    'EDGE_RESOLVE_STAGE: edge %s — exact text match, skipped both LLM calls (%.0f ms)',
+                    extracted_edge.uuid, (time() - start) * 1000,
+                )
+                return resolved, [], []
+
+        # --- Stage 1 pre-filter: drop low-similarity dedup candidates ---
+        # Candidates with None embeddings score 0.0 via _cosine_sim and are dropped — consistent
+        # with stage 2 behavior. The None-embedding fallback below only applies to the extracted edge.
+        if extracted_edge.fact_embedding is None:
+            logger.warning(
+                'EDGE_RESOLVE_STAGE1_DEDUP: edge %s — fact_embedding is None, skipping similarity pre-filter',
+                extracted_edge.uuid,
+            )
         else:
-            edge.attributes = {}
+            filtered = [
+                c
+                for c in related_edges
+                if _cosine_sim(extracted_edge.fact_embedding, c.fact_embedding) >= DEDUP_SIM_THRESHOLD
+            ]
+            if len(filtered) < len(related_edges):
+                logger.debug(
+                    'EDGE_RESOLVE_STAGE1_DEDUP: edge %s — dropped %d of %d candidates below DEDUP_SIM_THRESHOLD=%.2f',
+                    extracted_edge.uuid,
+                    len(related_edges) - len(filtered),
+                    len(related_edges),
+                    DEDUP_SIM_THRESHOLD,
+                )
+            related_edges = filtered
 
-    # --- Fast path: no candidates at all ---
-    if len(related_edges) == 0 and len(existing_edges) == 0:
-        await _extract_attributes(extracted_edge)
-        logger.debug(
-            'EDGE_RESOLVE_STAGE: edge %s — no candidates, skipped both LLM calls (%.0f ms)',
-            extracted_edge.uuid,
-            (time() - start) * 1000,
-        )
-        return extracted_edge, [], []
+        # =====================================================================
+        # STAGE 1: Dedup — is this fact already known between these endpoints?
+        # =====================================================================
+        resolved_edge = extracted_edge
+        duplicate_edges: list[EntityEdge] = []
 
-    # --- Fast path: exact text match ---
-    normalized_fact = _normalize_string_exact(extracted_edge.fact)
-    for edge in related_edges:
-        if (
-            edge.source_node_uuid == extracted_edge.source_node_uuid
-            and edge.target_node_uuid == extracted_edge.target_node_uuid
-            and _normalize_string_exact(edge.fact) == normalized_fact
-        ):
-            resolved = edge
-            if episode is not None and episode.uuid not in resolved.episodes:
-                resolved.episodes.append(episode.uuid)
+        if related_edges:
+            t_dedup = time()
+            dedup_context = {
+                'existing_edges': [
+                    {'idx': i, 'fact': edge.fact} for i, edge in enumerate(related_edges)
+                ],
+                'new_edge': extracted_edge.fact,
+                'edge_invalidation_candidates': [],  # empty — dedup only
+            }
+
             logger.debug(
-                'EDGE_RESOLVE_STAGE: edge %s — exact text match, skipped both LLM calls (%.0f ms)',
-                extracted_edge.uuid,
-                (time() - start) * 1000,
+                'EDGE_RESOLVE_STAGE1_DEDUP: edge "%s" — checking %d related edges',
+                extracted_edge.fact[:60], len(related_edges),
             )
-            return resolved, [], []
 
-    # --- Stage 1 pre-filter: drop low-similarity dedup candidates ---
-    # Candidates with None embeddings score 0.0 via _cosine_sim and are dropped — consistent
-    # with stage 2 behavior. The None-embedding fallback below only applies to the extracted edge.
-    if extracted_edge.fact_embedding is None:
-        logger.warning(
-            'EDGE_RESOLVE_STAGE1_DEDUP: edge %s — fact_embedding is None, skipping similarity pre-filter',
-            extracted_edge.uuid,
-        )
+            llm_response = await llm_client.generate_response(
+                prompt_library.dedupe_edges.resolve_edge(dedup_context),
+                response_model=EdgeDuplicate,
+                model_size=ModelSize.small,
+                prompt_name='dedupe_edges.resolve_edge',
+            )
+            response_object = EdgeDuplicate(**llm_response)
+
+            duplicate_fact_ids: list[int] = [
+                i for i in response_object.duplicate_facts if 0 <= i < len(related_edges)
+            ]
+
+            if duplicate_fact_ids:
+                resolved_edge = related_edges[duplicate_fact_ids[0]]
+                if episode is not None:
+                    resolved_edge.episodes.append(episode.uuid)
+                duplicate_edges = [related_edges[idx] for idx in duplicate_fact_ids]
+
+                await _extract_edge_attributes(llm_client, resolved_edge, episode, edge_type_candidates)
+
+                logger.debug(
+                    'EDGE_RESOLVE_STAGE: edge %s — duplicate found, skipped invalidation LLM call (%.0f ms)',
+                    extracted_edge.uuid, (time() - start) * 1000,
+                )
+                return resolved_edge, [], duplicate_edges
+
+            logger.debug(
+                'EDGE_RESOLVE_STAGE1_DEDUP: no duplicate found (%.0f ms)',
+                (time() - t_dedup) * 1000,
+            )
     else:
-        filtered = [
-            c
-            for c in related_edges
-            if _cosine_sim(extracted_edge.fact_embedding, c.fact_embedding) >= DEDUP_SIM_THRESHOLD
-        ]
-        if len(filtered) < len(related_edges):
-            logger.debug(
-                'EDGE_RESOLVE_STAGE1_DEDUP: edge %s — dropped %d of %d candidates below DEDUP_SIM_THRESHOLD=%.2f',
-                extracted_edge.uuid,
-                len(related_edges) - len(filtered),
-                len(related_edges),
-                DEDUP_SIM_THRESHOLD,
-            )
-        related_edges = filtered
-
-    # =========================================================================
-    # STAGE 1: Dedup — is this fact already known between these endpoints?
-    # =========================================================================
-    resolved_edge = extracted_edge
-    duplicate_edges: list[EntityEdge] = []
-
-    if related_edges:
-        t_dedup = time()
-        dedup_context = {
-            'existing_edges': [
-                {'idx': i, 'fact': edge.fact} for i, edge in enumerate(related_edges)
-            ],
-            'new_edge': extracted_edge.fact,
-            'edge_invalidation_candidates': [],  # empty — dedup only
-        }
-
-        logger.debug(
-            'EDGE_RESOLVE_STAGE1_DEDUP: edge "%s" — checking %d related edges',
-            extracted_edge.fact[:60],
-            len(related_edges),
-        )
-
-        llm_response = await llm_client.generate_response(
-            prompt_library.dedupe_edges.resolve_edge(dedup_context),
-            response_model=EdgeDuplicate,
-            model_size=ModelSize.small,
-            prompt_name='dedupe_edges.resolve_edge',
-        )
-        response_object = EdgeDuplicate(**llm_response)
-
-        duplicate_fact_ids: list[int] = [
-            i for i in response_object.duplicate_facts if 0 <= i < len(related_edges)
-        ]
-
-        if duplicate_fact_ids:
-            resolved_edge = related_edges[duplicate_fact_ids[0]]
-            if episode is not None:
-                resolved_edge.episodes.append(episode.uuid)
-            duplicate_edges = [related_edges[idx] for idx in duplicate_fact_ids]
-
-            await _extract_attributes(resolved_edge)
-
-            logger.debug(
-                'EDGE_RESOLVE_STAGE: edge %s — duplicate found, skipped invalidation LLM call (%.0f ms)',
-                extracted_edge.uuid,
-                (time() - start) * 1000,
-            )
-            return resolved_edge, [], duplicate_edges
-
-        logger.debug(
-            'EDGE_RESOLVE_STAGE1_DEDUP: no duplicate found (%.0f ms)',
-            (time() - t_dedup) * 1000,
-        )
+        resolved_edge = extracted_edge
+        duplicate_edges = []
 
     # =========================================================================
     # STAGE 2: Invalidation — does this NEW fact contradict existing facts?
@@ -831,7 +1009,7 @@ async def resolve_extracted_edge(
         if resolved_edge.invalid_at and not resolved_edge.expired_at:
             resolved_edge.expired_at = now
 
-    await _extract_attributes(resolved_edge)
+    await _extract_edge_attributes(llm_client, resolved_edge, episode, edge_type_candidates)
 
     logger.debug(
         'EDGE_RESOLVE_STAGE: edge %s -> %s, %d invalidations, total %.0f ms',
