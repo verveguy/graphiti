@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -23,6 +24,7 @@ from typing import Any, cast
 from pydantic import BaseModel
 
 from graphiti_core.edges import EntityEdge
+from graphiti_core.errors import NodeLabelValidationError
 from graphiti_core.graphiti_types import GraphitiClients
 from graphiti_core.helpers import semaphore_gather
 from graphiti_core.llm_client import LLMClient
@@ -44,7 +46,7 @@ from graphiti_core.prompts.extract_nodes import (
     SummarizedEntities,
 )
 from graphiti_core.search.search_filters import SearchFilters
-from graphiti_core.search.search_utils import node_similarity_search
+from graphiti_core.search.search_utils import node_fulltext_search, node_similarity_search
 from graphiti_core.utils.datetime_utils import utc_now
 from graphiti_core.utils.maintenance.dedup_helpers import (
     DedupCandidateIndexes,
@@ -60,8 +62,10 @@ logger = logging.getLogger(__name__)
 
 # Maximum number of nodes to summarize in a single LLM call
 MAX_NODES = 30
-NODE_DEDUP_CANDIDATE_LIMIT = 15
-NODE_DEDUP_COSINE_MIN_SCORE = 0.0  # lowered from 0.6; bge-base-en-v1.5 scores 0.5-0.65 for true dupes
+NODE_DEDUP_CANDIDATE_LIMIT = 10
+# 0.3 floor replaces the old 0.6 (too aggressive for short names on bge-base-en-v1.5).
+# BM25 provides the recall safety net for true duplicates that fall below 0.3.
+NODE_DEDUP_COSINE_MIN_SCORE = 0.3
 
 NodeSummaryFilter = Callable[[EntityNode], Awaitable[bool]]
 
@@ -116,15 +120,11 @@ async def extract_nodes(
             return False  # URL, not a file path
         return bool(_FILE_PATH_RE.search(name))
 
-    filtered_entities = [
-        e for e in raw_entities
-        if e.name.strip() and not _is_file_path(e.name)
-    ]
+    filtered_entities = [e for e in raw_entities if e.name.strip() and not _is_file_path(e.name)]
 
     end = time()
     logger.debug(
-        f'Extracted {len(filtered_entities)} entities{log_suffix} '
-        f'in {(end - start) * 1000:.0f} ms'
+        f'Extracted {len(filtered_entities)} entities{log_suffix} in {(end - start) * 1000:.0f} ms'
     )
 
     # Convert to EntityNode objects
@@ -378,11 +378,29 @@ async def _collect_candidate_nodes(
     return [_merge_candidate_nodes(result, existing_nodes_override) for result in search_results]
 
 
+def _build_dedup_search_filter(node: EntityNode) -> SearchFilters:
+    """Return a SearchFilters that restricts candidates to the node's specific type.
+
+    Untyped nodes (only the generic 'Entity' label) fall back to unfiltered search.
+    """
+    specific_labels = [label for label in node.labels if label != 'Entity']
+    if not specific_labels:
+        return SearchFilters()
+    try:
+        return SearchFilters(node_labels=specific_labels)
+    except NodeLabelValidationError:
+        return SearchFilters()
+
+
 async def _semantic_candidate_search(
     clients: GraphitiClients,
     extracted_nodes: list[EntityNode],
 ) -> list[list[EntityNode]]:
-    """Run direct cosine similarity search per extracted node without reranking."""
+    """Run hybrid HNSW+BM25 candidate search per extracted node with entity-type filtering.
+
+    For each node, HNSW and BM25 results are fetched concurrently, merged HNSW-first,
+    deduplicated by UUID, and capped at NODE_DEDUP_CANDIDATE_LIMIT.
+    """
     if not extracted_nodes:
         return []
 
@@ -396,17 +414,39 @@ async def _semantic_candidate_search(
             )
         )
 
+    async def _search_node(node: EntityNode, query_vector: list[float]) -> list[EntityNode]:
+        search_filter = _build_dedup_search_filter(node)
+        hnsw_results, bm25_results = await asyncio.gather(
+            node_similarity_search(
+                clients.driver,
+                query_vector,
+                search_filter,
+                [node.group_id],
+                NODE_DEDUP_CANDIDATE_LIMIT,
+                NODE_DEDUP_COSINE_MIN_SCORE,
+            ),
+            node_fulltext_search(
+                clients.driver,
+                node.name,
+                search_filter,
+                [node.group_id],
+                NODE_DEDUP_CANDIDATE_LIMIT,
+            ),
+        )
+        seen: set[str] = set()
+        merged: list[EntityNode] = []
+        for result in (*hnsw_results, *bm25_results):
+            if result.uuid not in seen:
+                seen.add(result.uuid)
+                merged.append(result)
+                if len(merged) == NODE_DEDUP_CANDIDATE_LIMIT:
+                    break
+        return merged
+
     return list(
         await semaphore_gather(
             *[
-                node_similarity_search(
-                    clients.driver,
-                    query_vector,
-                    SearchFilters(),
-                    [node.group_id],
-                    NODE_DEDUP_CANDIDATE_LIMIT,
-                    NODE_DEDUP_COSINE_MIN_SCORE,
-                )
+                _search_node(node, query_vector)
                 for node, query_vector in zip(extracted_nodes, query_vectors, strict=True)
             ]
         )
@@ -496,8 +536,7 @@ async def _resolve_with_llm(
     }
 
     logger.debug(
-        'DEDUP_LLM_CONTEXT: %d unresolved entities, %d existing candidates, '
-        'existing_names=%s',
+        'DEDUP_LLM_CONTEXT: %d unresolved entities, %d existing candidates, existing_names=%s',
         len(llm_extracted_nodes),
         len(indexes.existing_nodes),
         sorted(c.name for c in indexes.existing_nodes),
@@ -676,7 +715,8 @@ async def resolve_extracted_nodes(
 
     # Summary: how many were deduped vs kept as new
     deduped_count = sum(
-        1 for e, r in zip(extracted_nodes, state.resolved_nodes, strict=True)
+        1
+        for e, r in zip(extracted_nodes, state.resolved_nodes, strict=True)
         if r is not None and r.uuid != e.uuid
     )
     new_count = len(extracted_nodes) - deduped_count
@@ -983,9 +1023,7 @@ def _sanitize_label(label: str) -> str:
         return 'Entity'
 
     # Normalize to PascalCase
-    normalized = ''.join(
-        p[0].upper() + p[1:].lower() if len(p) > 1 else p.upper() for p in parts
-    )
+    normalized = ''.join(p[0].upper() + p[1:].lower() if len(p) > 1 else p.upper() for p in parts)
 
     # Ensure it starts with a letter (prepend 'Label' if it starts with a digit)
     if normalized and normalized[0].isdigit():
