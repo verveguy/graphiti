@@ -655,19 +655,23 @@ async def resolve_extracted_edges(
     ]
 
     if stage1_duplicate_indices:
-        await semaphore_gather(*[
-            _extract_edge_attributes(
-                llm_client,
-                related_edges_lists[i][stage1_duplicate_of[i]],  # type: ignore[index]
-                episode,
-                edge_types_lst[i],
-            )
-            for i in stage1_duplicate_indices
-        ])
+        # Deduplicate by resolved edge UUID: multiple extracted edges can map to the
+        # same existing edge, and calling _extract_edge_attributes on the same object
+        # in parallel is both redundant and races on edge.attributes.
+        seen_uuids: set[str] = set()
+        unique_attr_tasks = []
+        for i in stage1_duplicate_indices:
+            resolved_for_attr = related_edges_lists[i][stage1_duplicate_of[i]]  # type: ignore[index]
+            if resolved_for_attr.uuid not in seen_uuids:
+                seen_uuids.add(resolved_for_attr.uuid)
+                unique_attr_tasks.append(
+                    _extract_edge_attributes(llm_client, resolved_for_attr, episode, edge_types_lst[i])
+                )
+        await semaphore_gather(*unique_attr_tasks)
     for i in stage1_duplicate_indices:
         dup_idx = stage1_duplicate_of[i]
         resolved = related_edges_lists[i][dup_idx]  # type: ignore[index]
-        if episode is not None:
+        if episode is not None and episode.uuid not in resolved.episodes:
             resolved.episodes.append(episode.uuid)
         final_results[i] = (resolved, [], [resolved])
         logger.debug(
@@ -921,7 +925,7 @@ async def resolve_extracted_edge(
 
             if duplicate_fact_ids:
                 resolved_edge = related_edges[duplicate_fact_ids[0]]
-                if episode is not None:
+                if episode is not None and episode.uuid not in resolved_edge.episodes:
                     resolved_edge.episodes.append(episode.uuid)
                 duplicate_edges = [related_edges[idx] for idx in duplicate_fact_ids]
 
