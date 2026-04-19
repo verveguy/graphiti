@@ -46,6 +46,20 @@ from graphiti_core.utils.maintenance.dedup_helpers import _normalize_string_exac
 
 logger = logging.getLogger(__name__)
 
+INVALIDATION_SIM_THRESHOLD = 0.3  # cosine similarity floor for invalidation candidates (stage 2)
+DEDUP_SIM_THRESHOLD = 0.5  # cosine similarity floor for dedup candidates (stage 1)
+
+
+def _cosine_sim(a: list[float] | None, b: list[float] | None) -> float:
+    if a is None or b is None or len(a) == 0 or len(b) == 0:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
 
 def build_episodic_edges(
     entity_nodes: list[EntityNode],
@@ -368,18 +382,7 @@ async def resolve_extracted_edges(
     # Build per-edge invalidation candidates from endpoint edges,
     # filtering by embedding similarity to avoid sending irrelevant edges to the LLM.
     # "Brett attended meeting X" should not be checked against "Brett manages Sanjeev".
-    INVALIDATION_SIM_THRESHOLD = 0.3  # cosine similarity floor for invalidation candidates
     MAX_INVALIDATION_CANDIDATES = 10  # cap per edge to bound LLM prompt size
-
-    def _cosine_sim(a: list[float] | None, b: list[float] | None) -> float:
-        if a is None or b is None or len(a) == 0 or len(b) == 0:
-            return 0.0
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = sum(x * x for x in a) ** 0.5
-        norm_b = sum(x * x for x in b) ** 0.5
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-        return dot / (norm_a * norm_b)
 
     edge_invalidation_candidates: list[list[EntityEdge]] = []
     for extracted_edge, related_edges in zip(
@@ -669,6 +672,26 @@ async def resolve_extracted_edge(
                 extracted_edge.uuid, (time() - start) * 1000,
             )
             return resolved, [], []
+
+    # --- Stage 1 pre-filter: drop low-similarity dedup candidates ---
+    # Candidates with None embeddings score 0.0 via _cosine_sim and are dropped — consistent
+    # with stage 2 behavior. The None-embedding fallback below only applies to the extracted edge.
+    if extracted_edge.fact_embedding is None:
+        logger.warning(
+            'EDGE_RESOLVE_STAGE1_DEDUP: edge %s — fact_embedding is None, skipping similarity pre-filter',
+            extracted_edge.uuid,
+        )
+    else:
+        filtered = [
+            c for c in related_edges
+            if _cosine_sim(extracted_edge.fact_embedding, c.fact_embedding) >= DEDUP_SIM_THRESHOLD
+        ]
+        if len(filtered) < len(related_edges):
+            logger.debug(
+                'EDGE_RESOLVE_STAGE1_DEDUP: edge %s — dropped %d of %d candidates below DEDUP_SIM_THRESHOLD=%.2f',
+                extracted_edge.uuid, len(related_edges) - len(filtered), len(related_edges), DEDUP_SIM_THRESHOLD,
+            )
+        related_edges = filtered
 
     # =========================================================================
     # STAGE 1: Dedup — is this fact already known between these endpoints?
