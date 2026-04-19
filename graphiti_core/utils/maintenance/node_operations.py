@@ -427,7 +427,7 @@ async def _semantic_candidate_search(
             ),
             node_fulltext_search(
                 clients.driver,
-                node.name,
+                node.name.replace('\n', ' '),
                 search_filter,
                 [node.group_id],
                 NODE_DEDUP_CANDIDATE_LIMIT,
