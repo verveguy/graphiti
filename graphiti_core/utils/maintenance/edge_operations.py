@@ -308,7 +308,8 @@ async def resolve_extracted_edges(
     )
     logger.debug(
         'EDGE_RESOLVE_TIMING: get_between_nodes for %d edges in %.0f ms',
-        len(extracted_edges), (time() - t_between) * 1000,
+        len(extracted_edges),
+        (time() - t_between) * 1000,
     )
 
     # Merge override edges (e.g. from the recent Redis dedup cache) into
@@ -346,7 +347,8 @@ async def resolve_extracted_edges(
     )
     logger.debug(
         'EDGE_RESOLVE_TIMING: related_edges search for %d edges in %.0f ms',
-        len(extracted_edges), (time() - t_related) * 1000,
+        len(extracted_edges),
+        (time() - t_related) * 1000,
     )
 
     related_edges_lists: list[list[EntityEdge]] = [result.edges for result in related_edges_results]
@@ -376,7 +378,8 @@ async def resolve_extracted_edges(
 
     logger.debug(
         'EDGE_RESOLVE_TIMING: invalidation_candidate fetch for %d endpoints in %.0f ms',
-        len(endpoint_uuids), (time() - t_invalidation) * 1000,
+        len(endpoint_uuids),
+        (time() - t_invalidation) * 1000,
     )
 
     # Build per-edge invalidation candidates from endpoint edges,
@@ -385,9 +388,7 @@ async def resolve_extracted_edges(
     MAX_INVALIDATION_CANDIDATES = 10  # cap per edge to bound LLM prompt size
 
     edge_invalidation_candidates: list[list[EntityEdge]] = []
-    for extracted_edge, related_edges in zip(
-        extracted_edges, related_edges_lists, strict=True
-    ):
+    for extracted_edge, related_edges in zip(extracted_edges, related_edges_lists, strict=True):
         # Union edges from both endpoints
         source_edges = endpoint_edges_map.get(extracted_edge.source_node_uuid, [])
         target_edges = endpoint_edges_map.get(extracted_edge.target_node_uuid, [])
@@ -396,14 +397,14 @@ async def resolve_extracted_edges(
         # Remove the extracted edge itself and any already in related_edges
         related_uuids = {edge.uuid for edge in related_edges}
         candidates = [
-            e for e in all_endpoint_edges.values()
+            e
+            for e in all_endpoint_edges.values()
             if e.uuid not in related_uuids and e.uuid != extracted_edge.uuid
         ]
 
         # Filter by embedding similarity and take top N
         scored = [
-            (e, _cosine_sim(extracted_edge.fact_embedding, e.fact_embedding))
-            for e in candidates
+            (e, _cosine_sim(extracted_edge.fact_embedding, e.fact_embedding)) for e in candidates
         ]
         filtered = sorted(
             [(e, s) for e, s in scored if s >= INVALIDATION_SIM_THRESHOLD],
@@ -417,7 +418,10 @@ async def resolve_extracted_edges(
         if len(candidates) != len(result):
             logger.debug(
                 'EDGE_INVALIDATION_FILTER: edge "%s" — %d endpoint edges -> %d after sim filter (threshold=%.1f)',
-                extracted_edge.fact[:60], len(candidates), len(result), INVALIDATION_SIM_THRESHOLD,
+                extracted_edge.fact[:60],
+                len(candidates),
+                len(result),
+                INVALIDATION_SIM_THRESHOLD,
             )
 
     logger.debug(
@@ -503,23 +507,29 @@ async def resolve_extracted_edges(
 
     logger.debug(
         'EDGE_RESOLVE_TIMING: LLM resolve for %d edges in %.0f ms (%.0f ms/edge)',
-        len(extracted_edges), (time() - t_llm_resolve) * 1000,
+        len(extracted_edges),
+        (time() - t_llm_resolve) * 1000,
         (time() - t_llm_resolve) * 1000 / max(len(extracted_edges), 1),
     )
 
     # Count resolution outcomes
     exact_match_count = sum(
-        1 for edge, result in zip(extracted_edges, results, strict=True)
+        1
+        for edge, result in zip(extracted_edges, results, strict=True)
         if result[0].uuid != edge.uuid  # resolved to existing edge
     )
     no_op_invalidation_count = sum(
-        1 for result in results
+        1
+        for result in results
         if len(result[1]) == 0  # no invalidations
     )
     logger.debug(
         'EDGE_RESOLVE_OUTCOMES: %d edges resolved: %d matched existing, %d new, %d with invalidations, %d no-op invalidation checks',
-        len(extracted_edges), exact_match_count, len(extracted_edges) - exact_match_count,
-        sum(1 for r in results if len(r[1]) > 0), no_op_invalidation_count,
+        len(extracted_edges),
+        exact_match_count,
+        len(extracted_edges) - exact_match_count,
+        sum(1 for r in results if len(r[1]) > 0),
+        no_op_invalidation_count,
     )
 
     resolved_edges: list[EntityEdge] = []
@@ -652,7 +662,8 @@ async def resolve_extracted_edge(
         await _extract_attributes(extracted_edge)
         logger.debug(
             'EDGE_RESOLVE_STAGE: edge %s — no candidates, skipped both LLM calls (%.0f ms)',
-            extracted_edge.uuid, (time() - start) * 1000,
+            extracted_edge.uuid,
+            (time() - start) * 1000,
         )
         return extracted_edge, [], []
 
@@ -669,7 +680,8 @@ async def resolve_extracted_edge(
                 resolved.episodes.append(episode.uuid)
             logger.debug(
                 'EDGE_RESOLVE_STAGE: edge %s — exact text match, skipped both LLM calls (%.0f ms)',
-                extracted_edge.uuid, (time() - start) * 1000,
+                extracted_edge.uuid,
+                (time() - start) * 1000,
             )
             return resolved, [], []
 
@@ -683,13 +695,17 @@ async def resolve_extracted_edge(
         )
     else:
         filtered = [
-            c for c in related_edges
+            c
+            for c in related_edges
             if _cosine_sim(extracted_edge.fact_embedding, c.fact_embedding) >= DEDUP_SIM_THRESHOLD
         ]
         if len(filtered) < len(related_edges):
             logger.debug(
                 'EDGE_RESOLVE_STAGE1_DEDUP: edge %s — dropped %d of %d candidates below DEDUP_SIM_THRESHOLD=%.2f',
-                extracted_edge.uuid, len(related_edges) - len(filtered), len(related_edges), DEDUP_SIM_THRESHOLD,
+                extracted_edge.uuid,
+                len(related_edges) - len(filtered),
+                len(related_edges),
+                DEDUP_SIM_THRESHOLD,
             )
         related_edges = filtered
 
@@ -702,14 +718,17 @@ async def resolve_extracted_edge(
     if related_edges:
         t_dedup = time()
         dedup_context = {
-            'existing_edges': [{'idx': i, 'fact': edge.fact} for i, edge in enumerate(related_edges)],
+            'existing_edges': [
+                {'idx': i, 'fact': edge.fact} for i, edge in enumerate(related_edges)
+            ],
             'new_edge': extracted_edge.fact,
             'edge_invalidation_candidates': [],  # empty — dedup only
         }
 
         logger.debug(
             'EDGE_RESOLVE_STAGE1_DEDUP: edge "%s" — checking %d related edges',
-            extracted_edge.fact[:60], len(related_edges),
+            extracted_edge.fact[:60],
+            len(related_edges),
         )
 
         llm_response = await llm_client.generate_response(
@@ -734,7 +753,8 @@ async def resolve_extracted_edge(
 
             logger.debug(
                 'EDGE_RESOLVE_STAGE: edge %s — duplicate found, skipped invalidation LLM call (%.0f ms)',
-                extracted_edge.uuid, (time() - start) * 1000,
+                extracted_edge.uuid,
+                (time() - start) * 1000,
             )
             return resolved_edge, [], duplicate_edges
 
@@ -761,7 +781,8 @@ async def resolve_extracted_edge(
 
         logger.debug(
             'EDGE_RESOLVE_STAGE2_INVALIDATION: edge "%s" — checking %d endpoint edges',
-            extracted_edge.fact[:60], len(existing_edges),
+            extracted_edge.fact[:60],
+            len(existing_edges),
         )
 
         llm_response = await llm_client.generate_response(
@@ -780,7 +801,8 @@ async def resolve_extracted_edge(
 
         logger.debug(
             'EDGE_RESOLVE_STAGE2_INVALIDATION: %d contradictions found (%.0f ms)',
-            len(invalidation_candidates), (time() - t_invalidation) * 1000,
+            len(invalidation_candidates),
+            (time() - t_invalidation) * 1000,
         )
 
         # Apply temporal invalidation logic
@@ -790,9 +812,7 @@ async def resolve_extracted_edge(
             resolved_edge.expired_at = now
 
         if resolved_edge.expired_at is None:
-            invalidation_candidates.sort(
-                key=lambda c: (c.valid_at is None, ensure_utc(c.valid_at))
-            )
+            invalidation_candidates.sort(key=lambda c: (c.valid_at is None, ensure_utc(c.valid_at)))
             for candidate in invalidation_candidates:
                 candidate_valid_at_utc = ensure_utc(candidate.valid_at)
                 resolved_edge_valid_at_utc = ensure_utc(resolved_edge.valid_at)
@@ -815,7 +835,9 @@ async def resolve_extracted_edge(
 
     logger.debug(
         'EDGE_RESOLVE_STAGE: edge %s -> %s, %d invalidations, total %.0f ms',
-        extracted_edge.uuid, resolved_edge.uuid, len(invalidated_edges),
+        extracted_edge.uuid,
+        resolved_edge.uuid,
+        len(invalidated_edges),
         (time() - start) * 1000,
     )
 
