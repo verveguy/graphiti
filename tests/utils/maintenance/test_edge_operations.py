@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from graphiti_core.edges import EntityEdge
 from graphiti_core.nodes import EntityNode, EpisodicNode
+from graphiti_core.prompts.dedupe_edges import EdgeBatchResolutions, EdgeResolution
 from graphiti_core.search.search_config import SearchResults
 from graphiti_core.utils.maintenance.edge_operations import (
     extract_edges,
@@ -351,6 +352,8 @@ async def test_resolve_extracted_edges_fast_path_deduplication(monkeypatch):
         existing_edges,
         episode,
         edge_type_candidates=None,
+        *,
+        _bypass_stage1=False,
     ):
         nonlocal resolve_call_count
         resolve_call_count += 1
@@ -444,9 +447,11 @@ async def test_resolve_extracted_edges_fast_path_deduplication(monkeypatch):
         {},
     )
 
-    # Fast path should have deduplicated the 3 identical edges to 1
-    # So resolve_extracted_edge should only be called once
-    assert resolve_call_count == 1
+    # Fast path should have deduplicated the 3 identical edges to 1 (intra-batch dedup).
+    # The surviving edge has no graph candidates (get_between_nodes and get_by_node_uuid
+    # return []), so it hits the no-candidates fast path and resolve_extracted_edge is
+    # never called.
+    assert resolve_call_count == 0
     assert len(resolved_edges) == 1
     assert invalidated_edges == []
     assert new_edges == resolved_edges  # All edges are new (no graph duplicates)
@@ -852,3 +857,284 @@ async def test_dedup_prefilter_none_embedding_warns_and_passes_all(mock_llm_clie
     mock_llm_client.generate_response.assert_called_once()
     assert resolved is extracted
     assert duplicates == []
+
+
+# ---------------------------------------------------------------------------
+# Task 9: resolve_edges_batch prompt construction
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_edges_batch_prompt_structure():
+    """resolve_edges_batch renders edge_idx and candidate_idx correctly."""
+    from graphiti_core.prompts.dedupe_edges import resolve_edges_batch
+
+    context = {
+        'edges': [
+            {
+                'edge_idx': 0,
+                'fact': 'Alice works at Acme Corp',
+                'candidates': [
+                    {'candidate_idx': 0, 'fact': 'Alice is employed at Acme'},
+                    {'candidate_idx': 1, 'fact': 'Alice lives in Paris'},
+                ],
+            },
+            {
+                'edge_idx': 1,
+                'fact': 'Bob runs every morning',
+                'candidates': [],
+            },
+        ]
+    }
+
+    messages = resolve_edges_batch(context)
+
+    assert len(messages) == 2
+    assert messages[0].role == 'system'
+    assert messages[1].role == 'user'
+
+    content = messages[1].content
+
+    # Both edges must appear with correct edge_idx tags
+    assert 'edge_idx="0"' in content
+    assert 'edge_idx="1"' in content
+
+    # Edge 0's fact and candidates must appear
+    assert 'Alice works at Acme Corp' in content
+    assert 'candidate_idx=0' in content
+    assert 'Alice is employed at Acme' in content
+    assert 'candidate_idx=1' in content
+    assert 'Alice lives in Paris' in content
+
+    # Edge 1 has no candidates
+    assert 'Bob runs every morning' in content
+    assert '(none)' in content
+
+    # Response requirement must reference both edge_idx values
+    assert '0, 1' in content
+    assert 'exactly 2 resolutions' in content
+
+
+# ---------------------------------------------------------------------------
+# Task 10: batched Stage 1 dedup path in resolve_extracted_edges
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_extracted_edges_batch_stage1_dedup(monkeypatch):
+    """Batched Stage 1 resolves one edge as a duplicate and passes the other to Stage 2."""
+    from graphiti_core.utils.maintenance import edge_operations as edge_ops
+
+    monkeypatch.setattr(edge_ops, 'create_entity_edge_embeddings', AsyncMock(return_value=None))
+
+    # A similar (but not exact-match) existing edge — forces batch Stage 1 LLM call
+    related_edge = EntityEdge(
+        source_node_uuid='source_uuid',
+        target_node_uuid='target_uuid',
+        name='test_edge',
+        group_id='group_1',
+        fact='Alice is employed at Acme Corp',
+        episodes=['episode_1'],
+        created_at=datetime.now(timezone.utc) - timedelta(days=1),
+        valid_at=None,
+        invalid_at=None,
+    )
+
+    monkeypatch.setattr(EntityEdge, 'get_between_nodes', AsyncMock(return_value=[related_edge]))
+    monkeypatch.setattr(EntityEdge, 'get_by_node_uuid', AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        edge_ops, 'search', AsyncMock(return_value=SearchResults(edges=[related_edge]))
+    )
+
+    async def immediate_gather(*aws, max_coroutines=None):
+        return [await aw for aw in aws]
+
+    monkeypatch.setattr(edge_ops, 'semaphore_gather', immediate_gather)
+
+    # Batch response: edge_idx=0 is a duplicate of candidate_idx=0; edge_idx=1 is new
+    batch_response = EdgeBatchResolutions(
+        edge_resolutions=[
+            EdgeResolution(edge_idx=0, duplicate_of=0),
+            EdgeResolution(edge_idx=1, duplicate_of=None),
+        ]
+    )
+
+    # Stage 2 for the non-duplicate edge returns no contradictions
+    stage2_response = {'duplicate_facts': [], 'contradicted_facts': []}
+
+    async def mock_generate_response(messages, response_model=None, **kwargs):
+        if response_model is EdgeBatchResolutions:
+            return batch_response.model_dump()
+        return stage2_response
+
+    llm_client = MagicMock()
+    llm_client.generate_response = AsyncMock(side_effect=mock_generate_response)
+
+    clients = SimpleNamespace(
+        driver=MagicMock(),
+        llm_client=llm_client,
+        embedder=MagicMock(),
+        cross_encoder=MagicMock(),
+    )
+
+    source_node = EntityNode(
+        uuid='source_uuid', name='Source', group_id='group_1', labels=['Entity']
+    )
+    target_node = EntityNode(
+        uuid='target_uuid', name='Target', group_id='group_1', labels=['Entity']
+    )
+
+    episode = EpisodicNode(
+        uuid='episode_uuid',
+        name='Episode',
+        group_id='group_1',
+        source='message',
+        source_description='desc',
+        content='content',
+        valid_at=datetime.now(timezone.utc),
+    )
+
+    # edge1: different wording → no exact-match fast path → goes to batch Stage 1
+    edge1 = EntityEdge(
+        source_node_uuid='source_uuid',
+        target_node_uuid='target_uuid',
+        name='test_edge',
+        group_id='group_1',
+        fact='Alice works at Acme Corp',
+        episodes=[],
+        created_at=datetime.now(timezone.utc),
+        valid_at=None,
+        invalid_at=None,
+    )
+
+    # edge2: genuinely new fact
+    edge2 = EntityEdge(
+        source_node_uuid='source_uuid',
+        target_node_uuid='target_uuid',
+        name='test_edge',
+        group_id='group_1',
+        fact='Alice is the VP of Engineering',
+        episodes=[],
+        created_at=datetime.now(timezone.utc),
+        valid_at=None,
+        invalid_at=None,
+    )
+
+    resolved_edges, invalidated_edges, new_edges = await resolve_extracted_edges(
+        clients,
+        [edge1, edge2],
+        episode,
+        [source_node, target_node],
+        {},
+        {},
+    )
+
+    # edge1 resolved to related_edge (duplicate identified by batch Stage 1)
+    assert resolved_edges[0].uuid == related_edge.uuid
+    # edge2 remains as the new edge
+    assert resolved_edges[1].uuid == edge2.uuid
+
+    assert len(new_edges) == 1
+    assert new_edges[0].uuid == edge2.uuid
+    assert invalidated_edges == []
+
+    # The batch LLM call must have been made with EdgeBatchResolutions
+    batch_call = next(
+        c for c in llm_client.generate_response.call_args_list
+        if c.kwargs.get('response_model') is EdgeBatchResolutions
+    )
+    assert batch_call is not None
+
+
+@pytest.mark.asyncio
+async def test_batch_stage1_missing_edge_idx_fallback(monkeypatch):
+    """Edges with missing edge_idx in the batch response default to non-duplicate."""
+    from graphiti_core.utils.maintenance import edge_operations as edge_ops
+
+    monkeypatch.setattr(edge_ops, 'create_entity_edge_embeddings', AsyncMock(return_value=None))
+
+    related_edge = EntityEdge(
+        source_node_uuid='source_uuid',
+        target_node_uuid='target_uuid',
+        name='test_edge',
+        group_id='group_1',
+        fact='Alice is employed at Acme Corp',
+        episodes=['episode_1'],
+        created_at=datetime.now(timezone.utc) - timedelta(days=1),
+        valid_at=None,
+        invalid_at=None,
+    )
+
+    monkeypatch.setattr(EntityEdge, 'get_between_nodes', AsyncMock(return_value=[related_edge]))
+    monkeypatch.setattr(EntityEdge, 'get_by_node_uuid', AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        edge_ops, 'search', AsyncMock(return_value=SearchResults(edges=[related_edge]))
+    )
+
+    async def immediate_gather(*aws, max_coroutines=None):
+        return [await aw for aw in aws]
+
+    monkeypatch.setattr(edge_ops, 'semaphore_gather', immediate_gather)
+
+    # LLM returns an empty response — no edge_idx entries at all
+    empty_batch_response = EdgeBatchResolutions(edge_resolutions=[])
+    stage2_response = {'duplicate_facts': [], 'contradicted_facts': []}
+
+    async def mock_generate_response(messages, response_model=None, **kwargs):
+        if response_model is EdgeBatchResolutions:
+            return empty_batch_response.model_dump()
+        return stage2_response
+
+    llm_client = MagicMock()
+    llm_client.generate_response = AsyncMock(side_effect=mock_generate_response)
+
+    clients = SimpleNamespace(
+        driver=MagicMock(),
+        llm_client=llm_client,
+        embedder=MagicMock(),
+        cross_encoder=MagicMock(),
+    )
+
+    source_node = EntityNode(
+        uuid='source_uuid', name='Source', group_id='group_1', labels=['Entity']
+    )
+    target_node = EntityNode(
+        uuid='target_uuid', name='Target', group_id='group_1', labels=['Entity']
+    )
+
+    episode = EpisodicNode(
+        uuid='episode_uuid',
+        name='Episode',
+        group_id='group_1',
+        source='message',
+        source_description='desc',
+        content='content',
+        valid_at=datetime.now(timezone.utc),
+    )
+
+    extracted_edge = EntityEdge(
+        source_node_uuid='source_uuid',
+        target_node_uuid='target_uuid',
+        name='test_edge',
+        group_id='group_1',
+        fact='Alice works at Acme Corp',
+        episodes=[],
+        created_at=datetime.now(timezone.utc),
+        valid_at=None,
+        invalid_at=None,
+    )
+
+    resolved_edges, invalidated_edges, new_edges = await resolve_extracted_edges(
+        clients,
+        [extracted_edge],
+        episode,
+        [source_node, target_node],
+        {},
+        {},
+    )
+
+    # Missing edge_idx → treated as non-duplicate → extracted_edge is the resolved edge
+    assert len(resolved_edges) == 1
+    assert resolved_edges[0].uuid == extracted_edge.uuid
+    assert len(new_edges) == 1
+    assert new_edges[0].uuid == extracted_edge.uuid
+    assert invalidated_edges == []

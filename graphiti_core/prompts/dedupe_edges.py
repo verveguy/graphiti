@@ -32,12 +32,32 @@ class EdgeDuplicate(BaseModel):
     )
 
 
+class EdgeResolution(BaseModel):
+    edge_idx: int = Field(
+        ...,
+        description='Index of the new edge in the batch (0-based, matches the edge_idx provided in the prompt).',
+    )
+    duplicate_of: int | None = Field(
+        ...,
+        description='candidate_idx of the existing edge this new edge is a duplicate of, or null if not a duplicate.',
+    )
+
+
+class EdgeBatchResolutions(BaseModel):
+    edge_resolutions: list[EdgeResolution] = Field(
+        ...,
+        description='List of per-edge dedup decisions. Must include one entry per edge in the batch.',
+    )
+
+
 class Prompt(Protocol):
     resolve_edge: PromptVersion
+    resolve_edges_batch: PromptVersion
 
 
 class Versions(TypedDict):
     resolve_edge: PromptFunction
+    resolve_edges_batch: PromptFunction
 
 
 def resolve_edge(context: dict[str, Any]) -> list[Message]:
@@ -100,4 +120,77 @@ Result: duplicate_facts=[], contradicted_facts=[] (different events on different
     ]
 
 
-versions: Versions = {'resolve_edge': resolve_edge}
+def _format_batch_edges_for_prompt(edges: list[dict[str, Any]]) -> str:
+    parts = []
+    for edge in edges:
+        parts.append(f'<EDGE edge_idx="{edge["edge_idx"]}">')
+        parts.append(f'  NEW FACT: {edge["fact"]}')
+        if edge['candidates']:
+            parts.append('  EXISTING CANDIDATES:')
+            for candidate in edge['candidates']:
+                parts.append(
+                    f'    candidate_idx={candidate["candidate_idx"]}: {candidate["fact"]}'
+                )
+        else:
+            parts.append('  EXISTING CANDIDATES: (none)')
+        parts.append('</EDGE>')
+    return '\n'.join(parts)
+
+
+def resolve_edges_batch(context: dict[str, Any]) -> list[Message]:
+    edges: list[dict[str, Any]] = context['edges']
+    edge_indices = ', '.join(str(e['edge_idx']) for e in edges)
+    return [
+        Message(
+            role='system',
+            content='You are a fact deduplication assistant. '
+            'NEVER mark facts with key differences as duplicates.',
+        ),
+        Message(
+            role='user',
+            content=f"""
+NEVER mark facts as duplicates if they have key differences, particularly around numeric values, dates, or key qualifiers.
+
+For each NEW FACT below, determine if it is a duplicate of any EXISTING CANDIDATE listed under that fact.
+Each new fact has its own candidate list — do NOT compare candidates across different new facts.
+
+{_format_batch_edges_for_prompt(edges)}
+
+For each new fact (identified by edge_idx), return:
+- edge_idx: the index of the new fact (as provided above)
+- duplicate_of: the candidate_idx of the matching existing fact, or null if not a duplicate
+
+Your response MUST include exactly {len(edges)} resolutions with edge_idx values {edge_indices}.
+Do not skip any edge_idx.
+
+A fact is a duplicate only if it represents IDENTICAL factual information.
+Do NOT mark a fact as a duplicate if it has different numeric values, different dates, or different qualifiers.
+
+<EXAMPLE>
+<EDGE edge_idx="0">
+  NEW FACT: "Alice joined Acme Corp in 2020"
+  EXISTING CANDIDATES:
+    candidate_idx=0: "Alice joined Acme Corp in 2020"
+    candidate_idx=1: "Alice works at Acme Corp"
+</EDGE>
+<EDGE edge_idx="1">
+  NEW FACT: "Bob ran 5 miles on Tuesday"
+  EXISTING CANDIDATES:
+    candidate_idx=0: "Bob ran 3 miles on Wednesday"
+</EDGE>
+<EDGE edge_idx="2">
+  NEW FACT: "Alice is a software engineer at Acme"
+  EXISTING CANDIDATES: (none)
+</EDGE>
+
+Result:
+- edge_idx=0, duplicate_of=0  (identical fact)
+- edge_idx=1, duplicate_of=null  (different event)
+- edge_idx=2, duplicate_of=null  (no candidates)
+</EXAMPLE>
+""",
+        ),
+    ]
+
+
+versions: Versions = {'resolve_edge': resolve_edge, 'resolve_edges_batch': resolve_edges_batch}
