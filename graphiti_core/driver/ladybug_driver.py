@@ -7,6 +7,7 @@ the community fork of KuzuDB.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import nullcontext
@@ -595,6 +596,11 @@ async def replay_wal_ladybug(
                     if dry_run:
                         logger.debug('DRY RUN seq=%d: %s', seq, cypher[:80])
                         replayed += 1
+                        # Yield periodically during dry_run too — the JSON
+                        # parse + regex work can still block the event loop
+                        # on large WALs (e.g. 900k mutations).
+                        if replayed % batch_size == 0:
+                            await asyncio.sleep(0)
                         continue
 
                     if conn is None:
@@ -611,12 +617,19 @@ async def replay_wal_ladybug(
                             'Committed batch: %d total replayed (%d errors)',
                             replayed, errors,
                         )
+                        # Yield so other coroutines (e.g. progress-drain loops
+                        # listening on logging handlers) can run.  Without
+                        # this yield, replay_wal_ladybug pegs the event loop
+                        # and any concurrent `await` (in the calling service)
+                        # is starved until the replay completes.
+                        await asyncio.sleep(0)
 
         # Flush remaining batch
         if not dry_run and conn is not None and batch:
             batch_r, batch_e = _replay_batch(conn, batch)
             replayed += batch_r
             errors += batch_e
+            await asyncio.sleep(0)
 
     finally:
         if conn is not None:
