@@ -570,6 +570,13 @@ async def replay_wal_ladybug(
         for wal_file in wal_files:
             logger.info('Replaying %s...', wal_file.name)
 
+            # Yield between files so UI progress updates smoothly. The
+            # between-batch yield (after COMMIT) is only every ~10s of
+            # wall time in fat files, which causes UI updates to arrive
+            # in 10-second bursts. Yielding per file keeps file-progress
+            # events draining at ~100ms intervals.
+            await asyncio.sleep(0)
+
             with open(wal_file, encoding='utf-8') as f:
                 for line_num, line in enumerate(f, 1):
                     line = line.strip()
