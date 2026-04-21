@@ -139,7 +139,7 @@ SCHEMA_QUERIES = f"""
 """
 
 
-def _close_query_result(qr: Any) -> None:
+def _close_query_result(qr: kuzu.QueryResult | list[kuzu.QueryResult] | None) -> None:
     """Eagerly close a sync QueryResult (or list of them) returned by Connection.execute().
 
     Without this, discarded QueryResults can be collected by cyclic GC long after
@@ -290,10 +290,10 @@ class LadybugDriver(GraphDriver):
         if self._wal is not None:
             await self._wal.log_mutation(cypher_query_, cast(dict[str, Any], params), database='')
 
-        if not results:
-            return [], None, None
-
         try:
+            if not results:
+                return [], None, None
+
             if isinstance(results, list):
                 dict_results = [
                     [_fix_record_timestamps(row) for row in result.rows_as_dict()]
