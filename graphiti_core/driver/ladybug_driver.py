@@ -139,6 +139,24 @@ SCHEMA_QUERIES = f"""
 """
 
 
+def _close_query_result(qr: Any) -> None:
+    """Eagerly close a sync QueryResult (or list of them) returned by Connection.execute().
+
+    Without this, discarded QueryResults can be collected by cyclic GC long after
+    their parent Connection is closed; QueryResult.__del__ then calls into a freed
+    underlying C++ object and segfaults the process. AsyncConnection.execute() also
+    returns the same sync QueryResult type (it dispatches to Connection.execute via
+    run_in_executor), so the helper is used for both sync and awaited results.
+    """
+    if qr is None:
+        return
+    if isinstance(qr, list):
+        for r in qr:
+            r.close()
+    else:
+        qr.close()
+
+
 def _fix_record_timestamps(record: dict[str, Any]) -> dict[str, Any]:
     """Normalise naive datetime values to UTC.
 
@@ -275,12 +293,16 @@ class LadybugDriver(GraphDriver):
         if not results:
             return [], None, None
 
-        if isinstance(results, list):
-            dict_results = [
-                [_fix_record_timestamps(row) for row in result.rows_as_dict()] for result in results
-            ]
-        else:
-            dict_results = [_fix_record_timestamps(row) for row in results.rows_as_dict()]
+        try:
+            if isinstance(results, list):
+                dict_results = [
+                    [_fix_record_timestamps(row) for row in result.rows_as_dict()]
+                    for result in results
+                ]
+            else:
+                dict_results = [_fix_record_timestamps(row) for row in results.rows_as_dict()]
+        finally:
+            _close_query_result(results)
         return dict_results, None, None  # type: ignore
 
     def session(self, _database: str | None = None) -> GraphDriverSession:
@@ -327,14 +349,14 @@ class LadybugDriver(GraphDriver):
         # Load FTS extension on the async connection — setup_schema() loaded it
         # on the sync connection, but extensions are per-connection in LadybugDB.
         try:
-            await self.client.execute('LOAD EXTENSION FTS;')
+            _close_query_result(await self.client.execute('LOAD EXTENSION FTS;'))
             logger.info('FTS extension loaded on async connection')
         except Exception as e:
             logger.warning(f'Could not load FTS extension on async connection: {e}')
 
         # Load vector extension on async connection (same dual-load pattern as FTS).
         try:
-            await self.client.execute('LOAD EXTENSION vector;')
+            _close_query_result(await self.client.execute('LOAD EXTENSION vector;'))
             logger.info('vector extension loaded on async connection')
         except Exception as e:
             logger.warning(f'Could not load vector extension on async connection: {e}')
@@ -345,7 +367,7 @@ class LadybugDriver(GraphDriver):
 
         for query in get_fulltext_indices(GraphProvider.LADYBUG):
             try:
-                await self.client.execute(query)
+                _close_query_result(await self.client.execute(query))
                 logger.info(f'Created FTS index: {query[:80]}')
             except Exception as e:
                 if 'already exists' in str(e).lower():
@@ -356,7 +378,7 @@ class LadybugDriver(GraphDriver):
         # Create HNSW vector indexes for similarity search.
         for query in get_vector_indices(GraphProvider.LADYBUG):
             try:
-                await self.client.execute(query)
+                _close_query_result(await self.client.execute(query))
                 logger.info(f'Created vector index: {query[:80]}')
             except Exception as e:
                 if 'already exists' in str(e).lower():
@@ -369,30 +391,30 @@ class LadybugDriver(GraphDriver):
         # Load FTS extension before creating schema — required for
         # fulltext index creation in build_indices_and_constraints().
         try:
-            conn.execute('INSTALL FTS; LOAD EXTENSION FTS;')
+            _close_query_result(conn.execute('INSTALL FTS; LOAD EXTENSION FTS;'))
         except Exception as e:
             # FTS may already be installed/loaded
             logger.debug(f'FTS extension setup: {e}')
             try:
-                conn.execute('LOAD EXTENSION FTS;')
+                _close_query_result(conn.execute('LOAD EXTENSION FTS;'))
             except Exception as e_load:
                 logger.warning(
                     f'Could not load FTS extension — fulltext search will be unavailable: {e_load}'
                 )
         # Load vector extension for HNSW index support (same pattern as FTS above).
         try:
-            conn.execute('INSTALL vector; LOAD EXTENSION vector;')
+            _close_query_result(conn.execute('INSTALL vector; LOAD EXTENSION vector;'))
             logger.info('vector extension loaded on sync connection')
         except Exception as e:
             logger.debug(f'vector extension setup: {e}')
             try:
-                conn.execute('LOAD EXTENSION vector;')
+                _close_query_result(conn.execute('LOAD EXTENSION vector;'))
                 logger.info('vector extension loaded on sync connection')
             except Exception as e_load:
                 logger.warning(
                     f'Could not load vector extension — HNSW indexes will be unavailable: {e_load}'
                 )
-        conn.execute(SCHEMA_QUERIES)
+        _close_query_result(conn.execute(SCHEMA_QUERIES))
         conn.close()
 
 
@@ -537,14 +559,14 @@ async def replay_wal_ladybug(
         if not mutations:
             return 0, 0
         try:
-            conn.execute('BEGIN TRANSACTION')
+            _close_query_result(conn.execute('BEGIN TRANSACTION'))
             for _seq, cypher, params in mutations:
-                conn.execute(cypher, parameters=params)
-            conn.execute('COMMIT')
+                _close_query_result(conn.execute(cypher, parameters=params))
+            _close_query_result(conn.execute('COMMIT'))
             return len(mutations), 0
         except Exception as e:
             try:
-                conn.execute('ROLLBACK')
+                _close_query_result(conn.execute('ROLLBACK'))
             except Exception:
                 pass
             if len(mutations) == 1:
