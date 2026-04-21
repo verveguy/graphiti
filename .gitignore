@@ -166,3 +166,7 @@ cache.db*
 
 # All DS_Store files
 .DS_Store
+
+# Claude Code local-only state
+.claude/settings.local.json
+.claude/worktrees/
