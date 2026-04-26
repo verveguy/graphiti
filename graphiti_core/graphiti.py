@@ -985,6 +985,14 @@ class Graphiti:
                     saga_previous_episode_uuid,
                 )
 
+                # Incrementally update the in-process embedding cache
+                from graphiti_core.search.search_utils import (
+                    invalidate_embedding_cache,
+                    update_embedding_cache,
+                )
+
+                update_embedding_cache(nodes=hydrated_nodes, edges=entity_edges)
+
                 # Update communities if requested
                 communities = []
                 community_edges = []
@@ -996,6 +1004,8 @@ class Graphiti:
                         ],
                         max_coroutines=self.max_coroutines,
                     )
+                    # Invalidate community cache after updates
+                    invalidate_embedding_cache('communities')
 
                 end = time()
 
@@ -1213,6 +1223,14 @@ class Graphiti:
                     self.embedder,
                 )
 
+                # Incrementally update the in-process embedding cache
+                from graphiti_core.search.search_utils import update_embedding_cache
+
+                update_embedding_cache(
+                    nodes=final_hydrated_nodes,
+                    edges=resolved_edges + invalidated_edges,
+                )
+
                 # Handle saga association if provided
                 if saga is not None:
                     # Get or create saga node based on input type
@@ -1325,6 +1343,11 @@ class Graphiti:
             *[edge.save(driver) for edge in community_edges],
             max_coroutines=self.max_coroutines,
         )
+
+        # Invalidate the community embedding cache after rebuild
+        from graphiti_core.search.search_utils import invalidate_embedding_cache
+
+        invalidate_embedding_cache('communities')
 
         return community_nodes, community_edges
 
@@ -1565,6 +1588,12 @@ class Graphiti:
         await create_entity_node_embeddings(self.embedder, nodes)
 
         await add_nodes_and_edges_bulk(self.driver, [], [], nodes, edges, self.embedder)
+
+        # Incrementally update the in-process embedding cache
+        from graphiti_core.search.search_utils import update_embedding_cache
+
+        update_embedding_cache(nodes=nodes, edges=edges)
+
         return AddTripletResults(edges=edges, nodes=nodes)
 
     async def remove_episode(self, episode_uuid: str):
@@ -1596,3 +1625,8 @@ class Graphiti:
         await Node.delete_by_uuids(self.driver, [node.uuid for node in nodes_to_delete])
 
         await episode.delete(self.driver)
+
+        # Invalidate the in-process embedding cache after deletion
+        from graphiti_core.search.search_utils import invalidate_embedding_cache
+
+        invalidate_embedding_cache('all')
