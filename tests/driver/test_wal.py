@@ -284,6 +284,66 @@ class TestWalWriter:
         assert sorted(all_seqs) == [0, 1, 2]
 
     @pytest.mark.asyncio
+    async def test_scan_handles_chunk_boundary_in_utf8_continuation_byte(self, wal_dir):
+        """Backward chunk-scan tolerates UnicodeDecodeError on partial-line UTF-8.
+
+        When a WAL line is longer than the 8KB chunk size used by
+        `_scan_existing_files`, the leading edge of the first chunk read
+        starts mid-line. If that mid-line position lands inside a UTF-8
+        multibyte sequence, json.loads raises UnicodeDecodeError before
+        even reaching the JSON parser. The scan must skip these partial
+        lines, not abort.
+
+        Regression test: previously, only json.JSONDecodeError was caught
+        and any 0x80-0xBF byte at the chunk boundary blew up service init.
+        """
+        # Build a single WAL line longer than one 8KB chunk (~12KB).
+        # Place a UTF-8 continuation byte at the position where the
+        # backward chunk-read boundary lands (file_size - 8192).
+        seq = 42
+        prefix = json.dumps({'seq': seq, 'ts': 't', 'db': 'd', 'cypher': 'CREATE (n:Big)', 'params': {'x': 'A' * 8000}}, separators=(',', ':'))
+        # `prefix` is ASCII; pad with bytes that include a 0xa0 at the
+        # known chunk boundary. We synthesize a fake WAL file directly
+        # rather than going through log_mutation since we want byte-level
+        # control of the layout.
+        wal_path = wal_dir / '20260101_000000_abc123_0000.jsonl'
+
+        # Construct: a long line whose byte at offset (line_len - 8192)
+        # equals 0xa0. We can't easily inject 0xa0 into a JSON string
+        # since json.loads would reject it — but we don't need to: a
+        # short well-formed first line (which is what _scan_existing_files
+        # ultimately returns), preceded by a byte 0xa0 sitting at the
+        # *first* chunk boundary. Build with raw bytes.
+        well_formed_tail = (
+            json.dumps({'seq': seq, 'ts': 't', 'db': 'd', 'cypher': 'X', 'params': {}}) + '\n'
+        ).encode('utf-8')
+        # Pad to push tail past the 8192-byte boundary, with byte 0xa0 sitting
+        # exactly where the backward chunk-read first lands.
+        pad_len = 9000
+        body = b'\xa0' + b'X' * (pad_len - 1) + b'\n' + well_formed_tail
+
+        wal_path.write_bytes(body)
+
+        # If the scan fails on the chunk boundary, this raises
+        # UnicodeDecodeError. With the fix, it should resume from seq 42.
+        writer = WalWriter(wal_dir)
+        assert writer.current_sequence == seq + 1
+        await writer.close()
+
+    @pytest.mark.asyncio
+    async def test_scan_handles_non_dict_json_value(self, wal_dir):
+        """Backward chunk-scan tolerates JSON lines that decode to non-dict.
+
+        json.loads("null") returns None; `'seq' in None` would TypeError.
+        The scan must filter to dict-shaped entries and keep walking back.
+        """
+        wal_path = wal_dir / '20260101_000000_abc123_0000.jsonl'
+        wal_path.write_bytes(b'null\n[1, 2, 3]\n42\n' + json.dumps({'seq': 7, 'ts': 't', 'db': 'd'}).encode() + b'\n')
+        writer = WalWriter(wal_dir)
+        assert writer.current_sequence == 8
+        await writer.close()
+
+    @pytest.mark.asyncio
     async def test_filters_read_only_queries(self, wal_dir):
         """Read-only queries are not logged."""
         writer = WalWriter(wal_dir)

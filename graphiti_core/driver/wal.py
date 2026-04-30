@@ -133,10 +133,20 @@ class WalWriter:
                             if line:
                                 try:
                                     entry = json.loads(line)
-                                    if 'seq' in entry:
+                                    if isinstance(entry, dict) and 'seq' in entry:
                                         max_seq = max(max_seq, entry['seq'])
                                         break
-                                except json.JSONDecodeError:
+                                except (json.JSONDecodeError, UnicodeDecodeError):
+                                    # The leading "line" of a backward-read
+                                    # chunk is typically a partial line: it
+                                    # starts mid-line at the chunk boundary.
+                                    # If that boundary lands inside a UTF-8
+                                    # multibyte sequence (e.g., a continuation
+                                    # byte 0x80-0xBF appears at position 0),
+                                    # json.loads's pre-decode raises
+                                    # UnicodeDecodeError rather than
+                                    # JSONDecodeError. Treat the same — skip
+                                    # and walk backwards further.
                                     continue
                         else:
                             # No valid line found yet, read more
