@@ -102,6 +102,7 @@ from graphiti_core.utils.maintenance.graph_data_operations import (
     retrieve_episodes,
 )
 from graphiti_core.utils.maintenance.node_operations import (
+    _build_entity_types_context,
     extract_attributes_from_nodes,
     extract_nodes,
     resolve_extracted_nodes,
@@ -739,6 +740,7 @@ class Graphiti:
         episodes: list[EpisodicNode],
         entity_types: dict[str, type[BaseModel]] | None,
         edge_types: dict[str, type[BaseModel]] | None,
+        edge_type_map: dict[tuple[str, str], list[str]],
         custom_extraction_instructions: str | None,
     ) -> None:
         """Fire one max_tokens=1 call per distinct prompt type before the bulk fan-out.
@@ -753,34 +755,26 @@ class Graphiti:
 
         use_freeform = entity_types is None
 
-        # Build entity_types_context matching what real extraction calls produce.
-        entity_types_context: list[dict[str, Any]] = [
-            {
-                'entity_type_id': 0,
-                'entity_type_name': 'Entity',
-                'entity_type_description': (
-                    'A specific, identifiable entity that does not fit any of the other listed '
-                    'types. Must still be a concrete, meaningful thing — specific enough to be '
-                    'uniquely identifiable.'
-                ),
-            }
-        ]
-        if entity_types is not None:
-            entity_types_context += [
-                {
-                    'entity_type_id': i + 1,
-                    'entity_type_name': type_name,
-                    'entity_type_description': type_model.__doc__,
-                }
-                for i, (type_name, type_model) in enumerate(entity_types.items())
-            ]
+        # Use the shared helper so the entity_types_context matches real extraction calls
+        # byte-for-byte (including the default Entity base description).
+        entity_types_context = _build_entity_types_context(entity_types)
 
-        # Build edge_types_context matching what real edge extraction calls produce.
+        # Build edge_types_context using the same signature-mapping logic as extract_edges()
+        # so the system prompt matches the real fan-out cache key exactly.
+        edge_type_signatures_map: dict[str, list[tuple[str, str]]] = {}
+        for signature, edge_type_names in edge_type_map.items():
+            for edge_type in edge_type_names:
+                if edge_type not in edge_type_signatures_map:
+                    edge_type_signatures_map[edge_type] = []
+                edge_type_signatures_map[edge_type].append(signature)
+
         edge_types_context: list[dict[str, Any]] = (
             [
                 {
                     'fact_type_name': type_name,
-                    'fact_type_signatures': [('Entity', 'Entity')],
+                    'fact_type_signatures': edge_type_signatures_map.get(
+                        type_name, [('Entity', 'Entity')]
+                    ),
                     'fact_type_description': type_model.__doc__,
                 }
                 for type_name, type_model in edge_types.items()
@@ -1406,7 +1400,11 @@ class Graphiti:
 
                     # Seed the Anthropic prompt cache before the concurrent fan-out
                     await self._warmup_prompt_cache(
-                        episodes, entity_types, edge_types, custom_extraction_instructions
+                        episodes,
+                        entity_types,
+                        edge_types,
+                        edge_type_map or edge_type_map_default,
+                        custom_extraction_instructions,
                     )
 
                     # Extract and dedupe nodes and edges
