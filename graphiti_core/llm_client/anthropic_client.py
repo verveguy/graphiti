@@ -445,6 +445,8 @@ class AnthropicClient(LLMClient):
         """
         if self.cache_mode != 'system-block':
             return
+        if not messages or messages[0].role != 'system':
+            return
         warmup_msgs = [messages[0], Message(role='user', content='.')]
         try:
             await self._call_anthropic_api(warmup_msgs, max_tokens=1)
