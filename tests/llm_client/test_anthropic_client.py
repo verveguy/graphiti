@@ -243,7 +243,10 @@ class TestAnthropicClientGenerateResponse:
 
         with patch('anthropic.AsyncAnthropic', return_value=mock_async_anthropic):
             config = LLMConfig(
-                api_key='k', model='test-model', temperature=0.5, max_tokens=1000,
+                api_key='k',
+                model='test-model',
+                temperature=0.5,
+                max_tokens=1000,
                 cache_mode='top-level',
             )
             client = AnthropicClient(config=config)
@@ -269,7 +272,10 @@ class TestAnthropicClientGenerateResponse:
 
         with patch('anthropic.AsyncAnthropic', return_value=mock_async_anthropic):
             config = LLMConfig(
-                api_key='k', model='test-model', temperature=0.5, max_tokens=1000,
+                api_key='k',
+                model='test-model',
+                temperature=0.5,
+                max_tokens=1000,
                 cache_mode='system-block',
             )
             client = AnthropicClient(config=config)
@@ -299,8 +305,12 @@ class TestAnthropicClientGenerateResponse:
 
         with patch('anthropic.AsyncAnthropic', return_value=mock_async_anthropic):
             config = LLMConfig(
-                api_key='k', model='test-model', temperature=0.5, max_tokens=1000,
-                cache_mode='system-block', cache_ttl='1h',
+                api_key='k',
+                model='test-model',
+                temperature=0.5,
+                max_tokens=1000,
+                cache_mode='system-block',
+                cache_ttl='1h',
             )
             client = AnthropicClient(config=config)
             client.client = mock_async_anthropic
@@ -316,8 +326,8 @@ class TestAnthropicClientGenerateResponse:
         assert system_arg[0]['cache_control'] == {'type': 'ephemeral', 'ttl': '1h'}
 
     @pytest.mark.asyncio
-    async def test_cache_padding_appended(self, mock_async_anthropic):
-        """cache_padding_tokens > 0 appends deterministic filler to the system text."""
+    async def test_cache_padding_text_appended(self, mock_async_anthropic):
+        """cache_padding_text is appended to the system block when set."""
         content_item = MagicMock()
         content_item.type = 'tool_use'
         content_item.input = {'test_field': 'value'}
@@ -325,8 +335,12 @@ class TestAnthropicClientGenerateResponse:
 
         with patch('anthropic.AsyncAnthropic', return_value=mock_async_anthropic):
             config = LLMConfig(
-                api_key='k', model='test-model', temperature=0.5, max_tokens=1000,
-                cache_mode='system-block', cache_padding_tokens=300,
+                api_key='k',
+                model='test-model',
+                temperature=0.5,
+                max_tokens=1000,
+                cache_mode='system-block',
+                cache_padding_text='<EXTRA_RULES>be specific</EXTRA_RULES>',
             )
             client = AnthropicClient(config=config)
             client.client = mock_async_anthropic
@@ -340,8 +354,7 @@ class TestAnthropicClientGenerateResponse:
         call_kwargs = mock_async_anthropic.messages.create.call_args
         system_text = call_kwargs.kwargs.get('system')[0]['text']
         assert system_text.startswith('System message')
-        assert '<CACHE_FILLER' in system_text
-        assert '[opaque-filler-' in system_text
+        assert '<EXTRA_RULES>be specific</EXTRA_RULES>' in system_text
 
     @pytest.mark.asyncio
     async def test_cache_tokens_tracked(self, anthropic_client, mock_async_anthropic):

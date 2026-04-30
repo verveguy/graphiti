@@ -49,7 +49,6 @@ class LLMConfig:
         small_model: str | None = None,
         cache_mode: CacheMode = 'disabled',
         cache_ttl: CacheTTL = '5m',
-        cache_padding_tokens: int = 0,
         cache_padding_text: str | None = None,
     ):
         """
@@ -83,11 +82,10 @@ class LLMConfig:
         # in the system message and clears the per-model cacheable threshold.
         self.cache_mode: CacheMode = cache_mode
         self.cache_ttl: CacheTTL = cache_ttl
-        # cache_padding_tokens with no cache_padding_text uses generic filler
-        # ("be precise and conservative") which has been observed to bias the
-        # extraction model toward fewer entities. Provide cache_padding_text
-        # with substantive, neutral domain content (e.g., extended entity-type
-        # definitions, expanded few-shot examples) to clear the cacheable
-        # threshold without nudging the model's behavior.
-        self.cache_padding_tokens = cache_padding_tokens
+        # Optional substantive content appended to the system prompt under
+        # cache_mode='system-block'. Use to clear the per-model cacheable
+        # threshold (~2048 tokens for Sonnet 4.x, ~4500 for Haiku 4.x). Should
+        # be neutral domain content (extended entity-type definitions,
+        # additional few-shot examples) — task-shaped instructions in this
+        # field have been observed to bias extraction.
         self.cache_padding_text = cache_padding_text

@@ -27,7 +27,6 @@ config = LLMConfig(
     cache_mode='system-block',                # 'disabled' (default), 'top-level', 'system-block'
     cache_ttl='1h',                           # '5m' (default), '1h'
     cache_padding_text='<your stable text>',  # optional substantive padding
-    cache_padding_tokens=1500,                # used only if cache_padding_text is None
 )
 ```
 
@@ -45,26 +44,20 @@ config = LLMConfig(
 runs that span > 5 minutes between bursts. The 1h write surcharge is higher
 but amortizes cleanly across hundreds of reads.
 
-### `cache_padding_text` / `cache_padding_tokens`
+### `cache_padding_text`
 
 The cacheable system block must clear the per-model minimum to engage caching.
-If your restructured system prompt is below threshold, you can pad it:
+If your restructured system prompt is below threshold, you can supply
+`cache_padding_text` with substantive, neutral domain content — extended
+entity-type definitions, additional few-shot examples, detailed format
+specifications. Anything that doesn't bias the model toward particular
+outputs.
 
-- **Preferred**: provide `cache_padding_text` with substantive, neutral domain
-  content — extended entity-type definitions, additional few-shot examples,
-  detailed format specifications. Anything that doesn't bias the model toward
-  particular outputs.
-- **Last resort / measurement**: set `cache_padding_tokens=N`. The client
-  appends N tokens of license-style boilerplate that the model is trained to
-  ignore. Empirically this preserves extraction output (within LLM
-  nondeterminism), but is wasted bytes that you pay for at the cache-read
-  rate. Don't use this in production unless you're certain it doesn't move
-  your evaluation metrics.
-
-**Beware task-shaped padding.** Initial implementations used "be precise and
-conservative" filler text and observed measurable bias in entity counts on
-multiple chunks. Generic instructions interact with the task. The default
-filler now uses opaque boilerplate to minimize this.
+**Beware task-shaped padding.** During development we tried generic "be
+precise and conservative" filler text and observed measurable bias in entity
+counts on multiple chunks. Generic instructions interact with the task.
+Whatever you put in `cache_padding_text` should be neutral content that
+extends, not directs, the prompt.
 
 ### Per-model threshold notes
 
