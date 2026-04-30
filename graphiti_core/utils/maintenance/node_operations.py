@@ -21,10 +21,9 @@ from collections.abc import Awaitable, Callable
 from time import time
 from typing import Any, cast
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from graphiti_core.edges import EntityEdge
-from graphiti_core.errors import NodeLabelValidationError
 from graphiti_core.graphiti_types import GraphitiClients
 from graphiti_core.helpers import semaphore_gather
 from graphiti_core.llm_client import LLMClient
@@ -379,19 +378,14 @@ async def _collect_candidate_nodes(
 
 
 def _build_dedup_search_filter(node: EntityNode) -> SearchFilters:
-    """Return a SearchFilters that restricts candidates to the node's specific type.
+    """Return an unfiltered SearchFilters for dedup candidate search.
 
-    Untyped nodes (only the generic 'Entity' label) fall back to unfiltered search.
+    Label-scoped filtering was removed because the same real-world entity can receive
+    different labels across extraction calls, which would hide cross-label duplicates
+    from the candidate pool. The downstream exact-name and fuzzy-match passes are
+    already label-agnostic and handle disambiguation without label gating.
     """
-    specific_labels = [label for label in node.labels if label != 'Entity']
-    if not specific_labels:
-        return SearchFilters()
-    try:
-        # Use the first specific label only: multi-label filters have inconsistent semantics
-        # across backends (OR on Neo4j/FalkorDB vs AND on Ladybug).
-        return SearchFilters(node_labels=[specific_labels[0]])
-    except (NodeLabelValidationError, ValidationError):
-        return SearchFilters()
+    return SearchFilters()
 
 
 async def _semantic_candidate_search(

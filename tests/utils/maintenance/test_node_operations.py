@@ -932,7 +932,7 @@ async def test_batch_summaries_calls_llm_for_long_summary():
 def test_build_dedup_search_filter_typed_node():
     node = EntityNode(name='Alice', group_id='group', labels=['Entity', 'Person'])
     result = _build_dedup_search_filter(node)
-    assert result.node_labels == ['Person']
+    assert result.node_labels is None
 
 
 def test_build_dedup_search_filter_untyped_node():
@@ -941,10 +941,9 @@ def test_build_dedup_search_filter_untyped_node():
     assert result.node_labels is None
 
 
-def test_build_dedup_search_filter_invalid_label_falls_back():
-    # model_construct bypasses EntityNode validation so we can inject an invalid label
-    # (contains a space — fails SAFE_CYPHER_IDENTIFIER_PATTERN). SearchFilters raises
-    # pydantic.ValidationError (wrapping NodeLabelValidationError) which must be caught.
+def test_build_dedup_search_filter_typed_node_with_invalid_label_returns_unfiltered():
+    # model_construct bypasses EntityNode validation to inject an invalid label.
+    # The filter is unconditionally unfiltered so label validity is irrelevant.
     node = EntityNode.model_construct(
         name='Test',
         group_id='group',
@@ -1075,8 +1074,8 @@ async def test_semantic_candidate_search_untyped_node_uses_unfiltered_search(mon
 
 
 @pytest.mark.asyncio
-async def test_semantic_candidate_search_typed_node_uses_label_filter(monkeypatch):
-    """A typed node passes SearchFilters(node_labels=['Person']) to both search paths."""
+async def test_semantic_candidate_search_typed_node_uses_unfiltered_search(monkeypatch):
+    """A typed node passes SearchFilters() with no label filter to both search paths."""
     captured_filters: list[SearchFilters] = []
 
     async def capturing_hnsw(driver, query_vector, search_filter, group_ids, limit, min_score):
@@ -1103,4 +1102,74 @@ async def test_semantic_candidate_search_typed_node_uses_label_filter(monkeypatc
     await _semantic_candidate_search(clients, [extracted])
 
     assert len(captured_filters) == 2
-    assert all(f.node_labels == ['Person'] for f in captured_filters)
+    assert all(f.node_labels is None for f in captured_filters)
+
+
+# ---------------------------------------------------------------------------
+# Cross-label dedup regression tests (Tasks 5, 6, 7)
+# ---------------------------------------------------------------------------
+
+
+def test_build_dedup_search_filter_typed_node_returns_unfiltered():
+    """A typed node with a specific label always produces an unfiltered SearchFilters."""
+    node = EntityNode(
+        name='Visualization Data Service', group_id='group', labels=['Entity', 'Technology']
+    )
+    result = _build_dedup_search_filter(node)
+    assert result.node_labels is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_extracted_nodes_cross_label_exact_match_no_llm_call(monkeypatch):
+    """Extracted node resolves to existing node with a different specific label via exact-name match without LLM."""
+    existing = EntityNode(
+        name='Visualization Data Service', group_id='group', labels=['Service', 'Entity']
+    )
+    extracted = EntityNode(
+        name='Visualization Data Service', group_id='group', labels=['Technology', 'Entity']
+    )
+
+    clients, llm_generate = _make_clients()
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations._semantic_candidate_search',
+        _semantic_candidates([[existing]]),
+    )
+
+    resolved, uuid_map, _ = await resolve_extracted_nodes(
+        clients,
+        [extracted],
+        episode=_make_episode(),
+        previous_episodes=[],
+    )
+
+    assert resolved[0].uuid == existing.uuid
+    assert uuid_map[extracted.uuid] == existing.uuid
+    llm_generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_extracted_nodes_cross_label_same_name_produces_duplicate_pair(monkeypatch):
+    """Two nodes with the same name but different specific labels produce a duplicate_pairs entry."""
+    existing = EntityNode(
+        name='Visualization Data Service', group_id='group', labels=['Service', 'Entity']
+    )
+    extracted = EntityNode(
+        name='Visualization Data Service', group_id='group', labels=['Technology', 'Entity']
+    )
+
+    clients, _ = _make_clients()
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations._semantic_candidate_search',
+        _semantic_candidates([[existing]]),
+    )
+
+    _, _, duplicate_pairs = await resolve_extracted_nodes(
+        clients,
+        [extracted],
+        episode=_make_episode(),
+        previous_episodes=[],
+    )
+
+    assert len(duplicate_pairs) == 1
+    assert duplicate_pairs[0][0].uuid == extracted.uuid
+    assert duplicate_pairs[0][1].uuid == existing.uuid
