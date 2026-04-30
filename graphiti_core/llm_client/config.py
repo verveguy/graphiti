@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 from enum import Enum
+from typing import Literal
 
 DEFAULT_MAX_TOKENS = 16384
 DEFAULT_TEMPERATURE = 1
@@ -23,6 +24,10 @@ DEFAULT_TEMPERATURE = 1
 class ModelSize(Enum):
     small = 'small'
     medium = 'medium'
+
+
+CacheMode = Literal['disabled', 'top-level', 'system-block']
+CacheTTL = Literal['5m', '1h']
 
 
 class LLMConfig:
@@ -42,6 +47,10 @@ class LLMConfig:
         temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         small_model: str | None = None,
+        cache_mode: CacheMode = 'disabled',
+        cache_ttl: CacheTTL = '5m',
+        cache_padding_tokens: int = 0,
+        cache_padding_text: str | None = None,
     ):
         """
         Initialize the LLMConfig with the provided parameters.
@@ -66,3 +75,19 @@ class LLMConfig:
         self.small_model = small_model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        # Anthropic prompt-caching configuration. See docs/prompt_caching.md.
+        # 'disabled' is the safe default: the previous 'top-level' default writes
+        # full-prompt caches that almost never hit reads in graphiti's typical
+        # per-episode workload, costing the +25% write surcharge for ~zero benefit.
+        # Use 'system-block' once prompts are restructured so static content lives
+        # in the system message and clears the per-model cacheable threshold.
+        self.cache_mode: CacheMode = cache_mode
+        self.cache_ttl: CacheTTL = cache_ttl
+        # cache_padding_tokens with no cache_padding_text uses generic filler
+        # ("be precise and conservative") which has been observed to bias the
+        # extraction model toward fewer entities. Provide cache_padding_text
+        # with substantive, neutral domain content (e.g., extended entity-type
+        # definitions, expanded few-shot examples) to clear the cacheable
+        # threshold without nudging the model's behavior.
+        self.cache_padding_tokens = cache_padding_tokens
+        self.cache_padding_text = cache_padding_text

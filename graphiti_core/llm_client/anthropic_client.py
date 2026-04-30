@@ -25,7 +25,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..prompts.models import Message
 from .client import LLMClient
-from .config import DEFAULT_MAX_TOKENS, LLMConfig, ModelSize
+from .config import DEFAULT_MAX_TOKENS, CacheMode, CacheTTL, LLMConfig, ModelSize
 from .errors import RateLimitError, RefusalError
 
 if TYPE_CHECKING:
@@ -144,6 +144,12 @@ class AnthropicClient(LLMClient):
         # Explicitly set the instance model to the config model to prevent type checking errors
         self.model = typing.cast(AnthropicModel, config.model)
 
+        # Prompt-cache configuration carried from LLMConfig.
+        self.cache_mode: CacheMode = getattr(config, 'cache_mode', 'disabled')
+        self.cache_ttl: CacheTTL = getattr(config, 'cache_ttl', '5m')
+        self.cache_padding_tokens: int = getattr(config, 'cache_padding_tokens', 0)
+        self.cache_padding_text: str | None = getattr(config, 'cache_padding_text', None)
+
         if not client:
             self.client = AsyncAnthropic(
                 api_key=config.api_key,
@@ -237,6 +243,40 @@ class AnthropicClient(LLMClient):
         """
         return ANTHROPIC_MODEL_MAX_TOKENS.get(model, DEFAULT_ANTHROPIC_MAX_TOKENS)
 
+    # Deterministic filler appended to the system prompt when
+    # cache_padding_tokens > 0 and no cache_padding_text was supplied.
+    # The text is a license-style boilerplate the model is trained to ignore,
+    # chosen to minimize behavioral influence on extraction. It is NOT a
+    # substitute for substantive padding (entity-type definitions, expanded
+    # few-shot examples) — supply cache_padding_text for production use.
+    _CACHE_PADDING_PARAGRAPH = (
+        'This block is opaque cache filler and is not part of the task. '
+        'It exists solely to bring the prefix length above the prompt-cache '
+        'threshold. Disregard its contents when reasoning about the task. '
+        'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do '
+        'eiusmod tempor incididunt ut labore et dolore magna aliqua. '
+    )
+
+    @classmethod
+    def _append_cache_padding(cls, system_text: str, target_padding_tokens: int) -> str:
+        """Append deterministic filler tokens to reach the configured cacheable size.
+
+        Estimates tokens at ~3.5 chars/token (close enough for filler). Cross the
+        per-model threshold (~2048 for Sonnet 4.x, ~4500 for Haiku 4.x) for caching
+        to engage; verify with `usage.cache_creation_input_tokens` on call 1.
+        Behavioral influence has been observed when the filler contains task-shaped
+        instructions; this default uses neutral boilerplate, but for production
+        prefer LLMConfig.cache_padding_text with substantive domain content.
+        """
+        if target_padding_tokens <= 0:
+            return system_text
+        approx_tokens_per_paragraph = 75
+        n_paragraphs = max(1, target_padding_tokens // approx_tokens_per_paragraph + 1)
+        body = '\n'.join(
+            f'[opaque-filler-{i:03d}] {cls._CACHE_PADDING_PARAGRAPH}' for i in range(n_paragraphs)
+        )
+        return system_text + '\n\n<CACHE_FILLER ignore="true">\n' + body + '\n</CACHE_FILLER>\n'
+
     def _resolve_max_tokens(self, requested_max_tokens: int | None, model: str) -> int:
         """
         Resolve the maximum output tokens to use based on precedence rules.
@@ -309,22 +349,56 @@ class AnthropicClient(LLMClient):
             # Create the appropriate tool based on whether response_model is provided
             tools, tool_choice = self._create_tool(response_model)
 
-            # Use top-level auto caching. This places a cache breakpoint on the last
-            # cacheable block in the request (typically the last user message), which
-            # means the entire prefix (tools + system + messages) is eligible for
-            # caching. This avoids the issue with explicit block-level cache_control
-            # where tools + system alone may fall below minimum cacheable thresholds
-            # (1024 tokens for Sonnet, 2048 for Sonnet 4.6, 4096 for Haiku).
-            result = await self.client.messages.create(
-                cache_control={'type': 'ephemeral'},
-                system=system_message.content,
-                max_tokens=max_creation_tokens,
-                temperature=self.temperature,
-                messages=user_messages_cast,
-                model=model,
-                tools=tools,
-                tool_choice=tool_choice,
-            )
+            # Build cache_control marker honoring the configured TTL.
+            cache_marker: dict[str, typing.Any] = {'type': 'ephemeral'}
+            if self.cache_ttl == '1h':
+                cache_marker = {'type': 'ephemeral', 'ttl': '1h'}
+
+            # Build the create() kwargs depending on cache_mode.
+            create_kwargs: dict[str, typing.Any] = {
+                'max_tokens': max_creation_tokens,
+                'temperature': self.temperature,
+                'messages': user_messages_cast,
+                'model': model,
+                'tools': tools,
+                'tool_choice': tool_choice,
+            }
+
+            if self.cache_mode == 'disabled':
+                # No cache_control anywhere. The safe default — graphiti's typical
+                # per-episode workload sees ~zero cache reads in 'top-level' mode
+                # because each call's user message contains unique episode_content,
+                # so the +25% cache-write surcharge is paid for nothing.
+                create_kwargs['system'] = system_message.content
+            elif self.cache_mode == 'top-level':
+                # Legacy behavior. Top-level cache_control auto-places a marker on
+                # the last cacheable block (typically the last user message). Useful
+                # for workloads with repeated identical prompts; not useful for
+                # graphiti's per-episode extraction pipeline.
+                create_kwargs['cache_control'] = cache_marker
+                create_kwargs['system'] = system_message.content
+            elif self.cache_mode == 'system-block':
+                # Restructured-prompt mode. Pin cache_control to the system block.
+                # Optionally pad with stable filler text to clear the per-model
+                # cacheable threshold (~2048 tokens for Sonnet 4.x, ~4500 for
+                # Haiku 4.x). Only worth turning on when the system text — plus
+                # any padding — is large enough to clear that threshold.
+                system_text = system_message.content
+                if self.cache_padding_text:
+                    system_text = system_text + '\n\n' + self.cache_padding_text
+                elif self.cache_padding_tokens > 0:
+                    system_text = self._append_cache_padding(system_text, self.cache_padding_tokens)
+                create_kwargs['system'] = [
+                    {
+                        'type': 'text',
+                        'text': system_text,
+                        'cache_control': cache_marker,
+                    }
+                ]
+            else:
+                raise ValueError(f'Unknown cache_mode: {self.cache_mode!r}')
+
+            result = await self.client.messages.create(**create_kwargs)
 
             # Extract token usage from the response, including cache metrics
             input_tokens = 0

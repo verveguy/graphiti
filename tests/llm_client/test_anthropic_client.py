@@ -212,12 +212,13 @@ class TestAnthropicClientGenerateResponse:
         assert result['test_field'] == 'extracted_value'
 
     @pytest.mark.asyncio
-    async def test_auto_caching_enabled(self, anthropic_client, mock_async_anthropic):
-        """Test that top-level cache_control is passed for auto caching."""
+    async def test_cache_mode_disabled_default(self, anthropic_client, mock_async_anthropic):
+        """By default, no cache_control is sent — graphiti's per-episode workload
+        almost never sees cache reads under top-level mode, so the +25% write
+        surcharge is paid for ~zero benefit. Default is 'disabled'."""
         content_item = MagicMock()
         content_item.type = 'tool_use'
         content_item.input = {'test_field': 'value'}
-
         mock_async_anthropic.messages.create.return_value = _make_response([content_item])
 
         messages = [
@@ -227,18 +228,120 @@ class TestAnthropicClientGenerateResponse:
         await anthropic_client.generate_response(messages=messages, response_model=ResponseModel)
 
         call_kwargs = mock_async_anthropic.messages.create.call_args
-        # Top-level cache_control should be passed for auto caching
-        cache_control_arg = call_kwargs.kwargs.get('cache_control')
-        assert cache_control_arg == {'type': 'ephemeral'}
-
-        # System message should be a plain string (not structured content blocks)
+        assert 'cache_control' not in call_kwargs.kwargs
         system_arg = call_kwargs.kwargs.get('system')
         assert isinstance(system_arg, str)
         assert system_arg == 'System message'
 
-        # Tools should NOT have block-level cache_control
-        tools_arg = call_kwargs.kwargs.get('tools')
-        assert 'cache_control' not in tools_arg[-1]
+    @pytest.mark.asyncio
+    async def test_cache_mode_top_level(self, mock_async_anthropic):
+        """Legacy mode: top-level cache_control kwarg, plain-string system."""
+        content_item = MagicMock()
+        content_item.type = 'tool_use'
+        content_item.input = {'test_field': 'value'}
+        mock_async_anthropic.messages.create.return_value = _make_response([content_item])
+
+        with patch('anthropic.AsyncAnthropic', return_value=mock_async_anthropic):
+            config = LLMConfig(
+                api_key='k', model='test-model', temperature=0.5, max_tokens=1000,
+                cache_mode='top-level',
+            )
+            client = AnthropicClient(config=config)
+            client.client = mock_async_anthropic
+
+        messages = [
+            Message(role='system', content='System message'),
+            Message(role='user', content='User message'),
+        ]
+        await client.generate_response(messages=messages, response_model=ResponseModel)
+
+        call_kwargs = mock_async_anthropic.messages.create.call_args
+        assert call_kwargs.kwargs.get('cache_control') == {'type': 'ephemeral'}
+        assert call_kwargs.kwargs.get('system') == 'System message'
+
+    @pytest.mark.asyncio
+    async def test_cache_mode_system_block(self, mock_async_anthropic):
+        """System-block mode places cache_control on the system text block."""
+        content_item = MagicMock()
+        content_item.type = 'tool_use'
+        content_item.input = {'test_field': 'value'}
+        mock_async_anthropic.messages.create.return_value = _make_response([content_item])
+
+        with patch('anthropic.AsyncAnthropic', return_value=mock_async_anthropic):
+            config = LLMConfig(
+                api_key='k', model='test-model', temperature=0.5, max_tokens=1000,
+                cache_mode='system-block',
+            )
+            client = AnthropicClient(config=config)
+            client.client = mock_async_anthropic
+
+        messages = [
+            Message(role='system', content='System message'),
+            Message(role='user', content='User message'),
+        ]
+        await client.generate_response(messages=messages, response_model=ResponseModel)
+
+        call_kwargs = mock_async_anthropic.messages.create.call_args
+        assert 'cache_control' not in call_kwargs.kwargs
+        system_arg = call_kwargs.kwargs.get('system')
+        assert isinstance(system_arg, list)
+        assert system_arg[0]['type'] == 'text'
+        assert system_arg[0]['text'] == 'System message'
+        assert system_arg[0]['cache_control'] == {'type': 'ephemeral'}
+
+    @pytest.mark.asyncio
+    async def test_cache_ttl_1h(self, mock_async_anthropic):
+        """1h TTL is propagated into the cache_control marker."""
+        content_item = MagicMock()
+        content_item.type = 'tool_use'
+        content_item.input = {'test_field': 'value'}
+        mock_async_anthropic.messages.create.return_value = _make_response([content_item])
+
+        with patch('anthropic.AsyncAnthropic', return_value=mock_async_anthropic):
+            config = LLMConfig(
+                api_key='k', model='test-model', temperature=0.5, max_tokens=1000,
+                cache_mode='system-block', cache_ttl='1h',
+            )
+            client = AnthropicClient(config=config)
+            client.client = mock_async_anthropic
+
+        messages = [
+            Message(role='system', content='System message'),
+            Message(role='user', content='User message'),
+        ]
+        await client.generate_response(messages=messages, response_model=ResponseModel)
+
+        call_kwargs = mock_async_anthropic.messages.create.call_args
+        system_arg = call_kwargs.kwargs.get('system')
+        assert system_arg[0]['cache_control'] == {'type': 'ephemeral', 'ttl': '1h'}
+
+    @pytest.mark.asyncio
+    async def test_cache_padding_appended(self, mock_async_anthropic):
+        """cache_padding_tokens > 0 appends deterministic filler to the system text."""
+        content_item = MagicMock()
+        content_item.type = 'tool_use'
+        content_item.input = {'test_field': 'value'}
+        mock_async_anthropic.messages.create.return_value = _make_response([content_item])
+
+        with patch('anthropic.AsyncAnthropic', return_value=mock_async_anthropic):
+            config = LLMConfig(
+                api_key='k', model='test-model', temperature=0.5, max_tokens=1000,
+                cache_mode='system-block', cache_padding_tokens=300,
+            )
+            client = AnthropicClient(config=config)
+            client.client = mock_async_anthropic
+
+        messages = [
+            Message(role='system', content='System message'),
+            Message(role='user', content='User message'),
+        ]
+        await client.generate_response(messages=messages, response_model=ResponseModel)
+
+        call_kwargs = mock_async_anthropic.messages.create.call_args
+        system_text = call_kwargs.kwargs.get('system')[0]['text']
+        assert system_text.startswith('System message')
+        assert '<CACHE_FILLER' in system_text
+        assert '[opaque-filler-' in system_text
 
     @pytest.mark.asyncio
     async def test_cache_tokens_tracked(self, anthropic_client, mock_async_anthropic):
