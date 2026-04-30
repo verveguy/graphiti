@@ -127,7 +127,8 @@ frequently changing data. Graphiti addresses these challenges by providing:
 - **Episodes & Provenance:** Every entity and relationship traces back to the episodes (raw data) that produced it.
   Full lineage from derived fact to source.
 - **Prescribed & Learned Ontology:** Define entity and edge types upfront via Pydantic models (prescribed), or let
-  structure emerge from your data (learned). Start simple, evolve as patterns appear.
+  structure emerge from your data (learned). In freeform mode, entities carry one or more labels from a stable
+  16-label ontology; dedup merges union label sets so no signal is discarded. Start simple, evolve as patterns appear.
 - **Incremental Graph Construction:** New data integrates immediately without batch recomputation. The graph evolves
   in real-time as episodes are ingested.
 - **Hybrid Retrieval:** Combines semantic embeddings, keyword (BM25), and graph traversal for low-latency,
@@ -359,6 +360,43 @@ The MCP server exposes two write tools for AI assistant workflows:
 - `knowledge_merge_entities_batch(merges, dry_run=False)` — batch merge
 
 Both tools respect `dry_run` for safe previewing before committing changes.
+
+### Freeform entity labeling
+
+When no custom `entity_types` are provided, Graphiti runs in **freeform mode**: the LLM assigns one or
+more labels from a stable, closed ontology to every extracted entity. The available labels are:
+
+| Label | Description |
+|-------|-------------|
+| `Person` | An individual human being |
+| `Organization` | A company, institution, group, or governing body |
+| `Software` | A software application, library, or framework |
+| `Service` | A deployed service, platform, or SaaS product |
+| `System` | An integrated technical system or infrastructure component |
+| `Technology` | A protocol, standard, methodology, or technical approach |
+| `Concept` | An abstract idea, principle, or theoretical framework |
+| `Location` | A physical or virtual place, region, or address |
+| `Event` | A dated or scheduled occurrence or incident |
+| `Process` | A workflow, procedure, or repeatable operation |
+| `Requirement` | A constraint, specification, or policy requirement |
+| `Document` | A document, report, specification, or publication |
+| `Product` | A physical or digital product or deliverable |
+| `Project` | A project, initiative, or program |
+| `Award` | A prize, honor, or recognition |
+| `Book` | A book, novel, or long-form publication |
+
+Most entities get a single label (e.g., `['Entity', 'Person']`). The LLM may assign multiple labels
+when an entity genuinely spans categories — for example, a deployed open-source library might receive
+both `Service` and `Software`.
+
+**Multi-label union semantics:** Every entity node carries a `labels` list. When deduplication merges
+two nodes that represent the same real-world entity but have different labels, the surviving node's
+label set is updated to the **union** of both sets. No labels are discarded. This means an entity
+first seen as a `Service` and later extracted as a `System` will carry `['Entity', 'Service', 'System']`
+after merging.
+
+**Backward compatibility:** `labels[0]` is always `'Entity'` after sorting. Existing code that reads
+`node.labels[0]` as a primary-label fallback continues to work.
 
 ### Merge semantics
 
