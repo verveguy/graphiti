@@ -139,14 +139,8 @@ You may use information from the PREVIOUS MESSAGES only to disambiguate referenc
 
 
 def extract_attributes(context: dict[str, Any]) -> list[Message]:
-    return [
-        Message(
-            role='system',
-            content='You are a fact attribute extraction specialist. NEVER hallucinate or infer values not explicitly stated.',
-        ),
-        Message(
-            role='user',
-            content=f"""
+    sys_prompt = """You are a fact attribute extraction specialist. NEVER hallucinate or infer values not explicitly stated.
+
 Given the following FACT, its REFERENCE TIME, and any EXISTING ATTRIBUTES, extract or update
 attributes based on the information explicitly stated in the fact. Use the provided attribute
 descriptions to understand how each attribute should be determined.
@@ -156,8 +150,9 @@ Guidelines:
 2. Only use information stated in the FACT to set attribute values.
 3. Use REFERENCE TIME to resolve any relative temporal expressions in the fact.
 4. Preserve existing attribute values unless the fact explicitly provides new information.
+"""
 
-<FACT>
+    user_prompt = f"""<FACT>
 {context['fact']}
 </FACT>
 
@@ -168,8 +163,11 @@ Guidelines:
 <EXISTING ATTRIBUTES>
 {to_prompt_json(context['existing_attributes'])}
 </EXISTING ATTRIBUTES>
-""",
-        ),
+"""
+
+    return [
+        Message(role='system', content=sys_prompt),
+        Message(role='user', content=user_prompt),
     ]
 
 
