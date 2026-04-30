@@ -115,9 +115,7 @@ class TokenUsageTracker:
             self._usage[key].total_cache_creation_tokens += cache_creation_input_tokens
             self._usage[key].total_cache_read_tokens += cache_read_input_tokens
             if model:
-                self._usage[key].models_used[model] = (
-                    self._usage[key].models_used.get(model, 0) + 1
-                )
+                self._usage[key].models_used[model] = self._usage[key].models_used.get(model, 0) + 1
 
     def get_usage(self) -> dict[str, PromptTokenUsage]:
         """Get a copy of current token usage by prompt type."""

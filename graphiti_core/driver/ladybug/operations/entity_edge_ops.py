@@ -187,14 +187,11 @@ class LadybugEntityEdgeOperations(EntityEdgeOperations):
         executor: QueryExecutor,
         node_uuid: str,
     ) -> list[EntityEdge]:
-        query = (
-            """
+        query = """
             MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m:Entity)
             WHERE n.uuid = $node_uuid OR m.uuid = $node_uuid
             RETURN
-            """
-            + get_entity_edge_return_query(GraphProvider.LADYBUG)
-        )
+            """ + get_entity_edge_return_query(GraphProvider.LADYBUG)
         records, _, _ = await executor.execute_query(query, node_uuid=node_uuid)
         return [parse_ladybug_entity_edge(r) for r in records]
 

@@ -47,9 +47,7 @@ def strip_vecf32_wrappers(cypher: str) -> str:
 # This regex detects `SET <var> = $<param>` patterns. It must NOT
 # match `SET n.field = $value` (individual assignments), so we
 # require no dot after the variable name.
-_BULK_SET_RE = re.compile(
-    r'SET\s+([a-zA-Z_]\w*)\s*=\s*\$([a-zA-Z_]\w*)(?=\s|$|,)'
-)
+_BULK_SET_RE = re.compile(r'SET\s+([a-zA-Z_]\w*)\s*=\s*\$([a-zA-Z_]\w*)(?=\s|$|,)')
 
 
 def expand_bulk_property_set(
@@ -83,7 +81,7 @@ def expand_bulk_property_set(
     new_cypher = cypher
 
     for match in reversed(matches):
-        var_name = match.group(1)   # e.g., "n" or "e"
+        var_name = match.group(1)  # e.g., "n" or "e"
         param_name = match.group(2)  # e.g., "props"
 
         if param_name not in new_params:
@@ -106,7 +104,7 @@ def expand_bulk_property_set(
 
         # Replace the bulk SET with expanded assignments
         expanded = 'SET ' + ',\n    '.join(assignments)
-        new_cypher = new_cypher[:match.start()] + expanded + new_cypher[match.end():]
+        new_cypher = new_cypher[: match.start()] + expanded + new_cypher[match.end() :]
 
         # Remove the original nested dict param
         del new_params[param_name]

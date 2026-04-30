@@ -323,7 +323,9 @@ class LadybugSearchOperations(SearchOperations):
         # LadybugDB FTS for edges queries the RelatesToNode_ label, then we match
         # the full pattern to get source (n) and target (m) Entity nodes.
         cypher = (
-            get_relationships_query('edge_name_and_fact', limit=limit, provider=GraphProvider.LADYBUG)
+            get_relationships_query(
+                'edge_name_and_fact', limit=limit, provider=GraphProvider.LADYBUG
+            )
             + """
             WITH node AS e, score
             MATCH (n:Entity)-[:RELATES_TO]->(e)-[:RELATES_TO]->(m:Entity)
@@ -523,7 +525,9 @@ class LadybugSearchOperations(SearchOperations):
             filter_params['group_ids'] = group_ids
 
         cypher = (
-            get_nodes_query('episode_content', '$query', limit=limit, provider=GraphProvider.LADYBUG)
+            get_nodes_query(
+                'episode_content', '$query', limit=limit, provider=GraphProvider.LADYBUG
+            )
             + """
             WITH node AS episode, score
             MATCH (e:Episodic)

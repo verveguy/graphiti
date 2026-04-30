@@ -276,7 +276,9 @@ class WalWriter:
         """
         async with self._lock:
             if self._chunk_buffer is not None:
-                raise RuntimeError('WAL: Cannot start a chunk while another chunk is already active')
+                raise RuntimeError(
+                    'WAL: Cannot start a chunk while another chunk is already active'
+                )
             self._chunk_buffer = []
 
         try:

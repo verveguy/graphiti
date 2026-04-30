@@ -1917,8 +1917,7 @@ class Graphiti:
         # that dry-run mode can compute accurate counts without making any writes.
         survivor_edges = await EntityEdge.get_by_node_uuid(self.driver, survivor_uuid)
         survivor_edge_keys: set[tuple[str, str, str, str]] = {
-            (e.source_node_uuid, e.target_node_uuid, e.name, e.fact)
-            for e in survivor_edges
+            (e.source_node_uuid, e.target_node_uuid, e.name, e.fact) for e in survivor_edges
         }
 
         survivor_mentions = await EpisodicEdge.get_by_entity_uuid(self.driver, survivor_uuid)
@@ -1929,8 +1928,12 @@ class Graphiti:
             dup_edges = await EntityEdge.get_by_node_uuid(self.driver, dup.uuid)
             edges_to_delete: list[str] = []
             for edge in dup_edges:
-                new_src = survivor_uuid if edge.source_node_uuid == dup.uuid else edge.source_node_uuid
-                new_tgt = survivor_uuid if edge.target_node_uuid == dup.uuid else edge.target_node_uuid
+                new_src = (
+                    survivor_uuid if edge.source_node_uuid == dup.uuid else edge.source_node_uuid
+                )
+                new_tgt = (
+                    survivor_uuid if edge.target_node_uuid == dup.uuid else edge.target_node_uuid
+                )
                 key = (new_src, new_tgt, edge.name, edge.fact)
                 if key in survivor_edge_keys:
                     edges_to_delete.append(edge.uuid)

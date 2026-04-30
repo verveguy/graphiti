@@ -301,7 +301,16 @@ class TestWalWriter:
         # Place a UTF-8 continuation byte at the position where the
         # backward chunk-read boundary lands (file_size - 8192).
         seq = 42
-        prefix = json.dumps({'seq': seq, 'ts': 't', 'db': 'd', 'cypher': 'CREATE (n:Big)', 'params': {'x': 'A' * 8000}}, separators=(',', ':'))
+        prefix = json.dumps(
+            {
+                'seq': seq,
+                'ts': 't',
+                'db': 'd',
+                'cypher': 'CREATE (n:Big)',
+                'params': {'x': 'A' * 8000},
+            },
+            separators=(',', ':'),
+        )
         # `prefix` is ASCII; pad with bytes that include a 0xa0 at the
         # known chunk boundary. We synthesize a fake WAL file directly
         # rather than going through log_mutation since we want byte-level
@@ -338,7 +347,9 @@ class TestWalWriter:
         The scan must filter to dict-shaped entries and keep walking back.
         """
         wal_path = wal_dir / '20260101_000000_abc123_0000.jsonl'
-        wal_path.write_bytes(b'null\n[1, 2, 3]\n42\n' + json.dumps({'seq': 7, 'ts': 't', 'db': 'd'}).encode() + b'\n')
+        wal_path.write_bytes(
+            b'null\n[1, 2, 3]\n42\n' + json.dumps({'seq': 7, 'ts': 't', 'db': 'd'}).encode() + b'\n'
+        )
         writer = WalWriter(wal_dir)
         assert writer.current_sequence == 8
         await writer.close()

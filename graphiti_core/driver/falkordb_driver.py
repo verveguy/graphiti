@@ -392,7 +392,9 @@ class FalkorDriver(GraphDriver):
                 await self.execute_query(query)
             except _conn_errors as e:
                 # Transient connection/timeout errors are non-fatal for idempotent index creation
-                logger.warning(f'Index creation skipped (will retry on next startup): {query[:80]}: {e}')
+                logger.warning(
+                    f'Index creation skipped (will retry on next startup): {query[:80]}: {e}'
+                )
 
     def clone(self, database: str) -> GraphDriver:
         """

@@ -921,7 +921,6 @@ async def test_edge_fulltext_search(
     if graph_driver.provider == GraphProvider.LADYBUG:
         pytest.skip('Skipping as fulltext indexing not supported for LadybugDB')
 
-
     graphiti = Graphiti(
         graph_driver=graph_driver,
         llm_client=mock_llm_client,
@@ -1311,7 +1310,6 @@ async def test_node_fulltext_search(
     if graph_driver.provider == GraphProvider.LADYBUG:
         pytest.skip('Skipping as fulltext indexing not supported for LadybugDB')
 
-
     graphiti = Graphiti(
         graph_driver=graph_driver,
         llm_client=mock_llm_client,
@@ -1521,7 +1519,6 @@ async def test_episode_fulltext_search(
     if graph_driver.provider == GraphProvider.LADYBUG:
         pytest.skip('Skipping as fulltext indexing not supported for LadybugDB')
 
-
     graphiti = Graphiti(
         graph_driver=graph_driver,
         llm_client=mock_llm_client,
@@ -1572,7 +1569,6 @@ async def test_community_fulltext_search(
 ):
     if graph_driver.provider == GraphProvider.LADYBUG:
         pytest.skip('Skipping as fulltext indexing not supported for LadybugDB')
-
 
     graphiti = Graphiti(
         graph_driver=graph_driver,
@@ -1663,7 +1659,6 @@ async def test_get_relevant_nodes(
 
     if graph_driver.provider == GraphProvider.LADYBUG:
         pytest.skip('Skipping as tests fail on LadybugDB')
-
 
     graphiti = Graphiti(
         graph_driver=graph_driver,

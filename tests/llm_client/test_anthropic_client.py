@@ -517,9 +517,7 @@ class TestAnthropicClientWarmup:
         mock_async_anthropic.messages.create.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_warmup_system_block_mode_calls_api_with_max_tokens_1(
-        self, mock_async_anthropic
-    ):
+    async def test_warmup_system_block_mode_calls_api_with_max_tokens_1(self, mock_async_anthropic):
         """warmup fires one max_tokens=1 call when cache_mode='system-block'."""
         content_item = MagicMock()
         content_item.type = 'tool_use'

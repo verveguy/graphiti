@@ -1039,7 +1039,8 @@ async def test_resolve_extracted_edges_batch_stage1_dedup(monkeypatch):
 
     # The batch LLM call must have been made with EdgeBatchResolutions
     batch_call = next(
-        c for c in llm_client.generate_response.call_args_list
+        c
+        for c in llm_client.generate_response.call_args_list
         if c.kwargs.get('response_model') is EdgeBatchResolutions
     )
     assert batch_call is not None

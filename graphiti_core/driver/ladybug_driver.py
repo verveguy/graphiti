@@ -449,14 +449,17 @@ class LadybugDriverSession(GraphDriverSession):
 import re
 
 # ISO-8601 pattern for detecting timestamp strings in WAL params
-_ISO_TS_RE = re.compile(
-    r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$'
-)
+_ISO_TS_RE = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$')
 
 # Known timestamp field names in the graphiti schema
-_TIMESTAMP_FIELDS = frozenset({
-    'created_at', 'valid_at', 'invalid_at', 'expired_at',
-})
+_TIMESTAMP_FIELDS = frozenset(
+    {
+        'created_at',
+        'valid_at',
+        'invalid_at',
+        'expired_at',
+    }
+)
 
 
 def _is_timestamp_field(key: str) -> bool:
@@ -484,11 +487,7 @@ def _deserialize_wal_params(params: dict[str, Any]) -> dict[str, Any]:
     """
     converted = {}
     for key, value in params.items():
-        if (
-            isinstance(value, str)
-            and _is_timestamp_field(key)
-            and _ISO_TS_RE.match(value)
-        ):
+        if isinstance(value, str) and _is_timestamp_field(key) and _ISO_TS_RE.match(value):
             try:
                 dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
                 if dt.tzinfo is None:
@@ -644,7 +643,8 @@ async def replay_wal_ladybug(
                         batch = []
                         logger.info(
                             'Committed batch: %d total replayed (%d errors)',
-                            replayed, errors,
+                            replayed,
+                            errors,
                         )
                         # Yield so other coroutines (e.g. progress-drain loops
                         # listening on logging handlers) can run.  Without
