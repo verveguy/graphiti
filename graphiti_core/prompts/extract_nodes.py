@@ -328,7 +328,7 @@ def extract_text(context: dict[str, Any]) -> list[Message]:
     #   custom_extraction_instructions provided at call time).
     # When LLMConfig.cache_mode='system-block' is enabled and the system block
     # clears the per-model cacheable threshold (~2048 tokens for Sonnet 4.x,
-    # ~4500 for Haiku 4.x — possibly via cache_padding_tokens), this layout
+    # ~4500 for Haiku 4.x — possibly via cache_padding_text), this layout
     # produces real cache reads on calls 2..N.
     sys_prompt = f"""You are an entity extraction specialist for unstructured text.
 NEVER extract abstract concepts, feelings, or generic words.

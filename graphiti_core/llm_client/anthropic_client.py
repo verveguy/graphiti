@@ -145,9 +145,9 @@ class AnthropicClient(LLMClient):
         self.model = typing.cast(AnthropicModel, config.model)
 
         # Prompt-cache configuration carried from LLMConfig.
-        self.cache_mode: CacheMode = getattr(config, 'cache_mode', 'disabled')
-        self.cache_ttl: CacheTTL = getattr(config, 'cache_ttl', '5m')
-        self.cache_padding_text: str | None = getattr(config, 'cache_padding_text', None)
+        self.cache_mode: CacheMode = config.cache_mode
+        self.cache_ttl: CacheTTL = config.cache_ttl
+        self.cache_padding_text: str | None = config.cache_padding_text
 
         if not client:
             self.client = AsyncAnthropic(

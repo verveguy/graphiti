@@ -119,7 +119,7 @@ def nodes(context: dict[str, Any]) -> list[Message]:
     sys_prompt = """You are an entity deduplication assistant.
 NEVER fabricate entity names or mark distinct entities as duplicates.
 
-Each ENTITY in the user message was extracted from the CURRENT MESSAGE.
+Each of the above ENTITIES was extracted from the CURRENT MESSAGE.
 For each entity, determine if it is a duplicate of any EXISTING ENTITY.
 Entities should only be considered duplicates if they refer to the *same real-world object or concept*.
 
@@ -167,6 +167,7 @@ Result: duplicate_candidate_id = 0 (synonym — "car" and "vehicle" refer to the
 {to_prompt_json(context['existing_nodes'])}
 </EXISTING ENTITIES>
 
+Task:
 ENTITIES contains {n} entities with IDs 0 through {n - 1}.
 Your response MUST include EXACTLY {n} resolutions with IDs 0 through {n - 1}. Do not skip or add IDs.
 """
