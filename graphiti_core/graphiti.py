@@ -1783,6 +1783,8 @@ class Graphiti:
         if survivor_uuid in duplicate_uuids:
             raise ValueError(f'survivor_uuid {survivor_uuid!r} must not appear in duplicate_uuids')
 
+        duplicate_uuids = list(dict.fromkeys(duplicate_uuids))
+
         # Fetch and validate all duplicates before any writes
         validated_dups: list[EntityNode] = []
         for dup_uuid in duplicate_uuids:
