@@ -278,9 +278,6 @@ Guidelines:
 5. Use the most specific form present in the data (e.g., "road cycling" not "cycling").
 6. If a value would not be meaningful and distinguishable when read alone later, do NOT extract it.
 
-Given the above source description and JSON, extract relevant entities from the provided JSON.
-{classification_instruction}
-
 <EXAMPLE>
 JSON: {{"user": "Jordan Lee", "company": "Acme Corp", "role": "engineer", "start_date": "2024-01-15", "location": "Denver", "active": true}}
 Good extractions: "Jordan Lee" (Person), "Acme Corp" (Organization), "Denver" (Location)
@@ -303,6 +300,8 @@ Do NOT extract: "photo" (generic media noun), "event" (generic event noun), "gov
 </JSON>
 
 {context['custom_extraction_instructions']}
+Given the above source description and JSON, extract relevant entities from the provided JSON.
+{classification_instruction}
 """
     return [
         Message(role='system', content=sys_prompt),
@@ -389,14 +388,7 @@ Do NOT extract: "pic" (generic media noun), "event" (generic event noun), "baske
 def classify_nodes(context: dict[str, Any]) -> list[Message]:
     sys_prompt = (
         'You are an entity classification specialist. '
-        'NEVER assign types not listed in ENTITY TYPES.\n\n'
-        'Given the above conversation, extracted entities, and provided entity types and their descriptions, '
-        'classify the extracted entities.\n\n'
-        'Guidelines:\n'
-        '1. Each entity must have exactly one type.\n'
-        '2. NEVER use types not listed in ENTITY TYPES.\n'
-        '3. If none of the provided entity types accurately classify an extracted entity, '
-        'the type should be set to None.'
+        'NEVER assign types not listed in ENTITY TYPES.'
     )
 
     user_prompt = f"""<PREVIOUS MESSAGES>
@@ -414,6 +406,13 @@ def classify_nodes(context: dict[str, Any]) -> list[Message]:
 <ENTITY TYPES>
 {context['entity_types']}
 </ENTITY TYPES>
+
+Given the above conversation, extracted entities, and provided entity types and their descriptions, classify the extracted entities.
+
+Guidelines:
+1. Each entity must have exactly one type.
+2. NEVER use types not listed in ENTITY TYPES.
+3. If none of the provided entity types accurately classify an extracted entity, the type should be set to None.
 """
     return [
         Message(role='system', content=sys_prompt),
