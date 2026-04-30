@@ -140,12 +140,8 @@ def _entity_types_section(context: dict[str, Any]) -> str:
 
 
 def extract_message(context: dict[str, Any]) -> list[Message]:
-    sys_prompt = (
-        'You are an entity extraction specialist for conversational messages. '
-        'NEVER extract abstract concepts, feelings, or generic words.'
-    )
+    sys_prompt = f"""You are an entity extraction specialist for conversational messages. NEVER extract abstract concepts, feelings, or generic words.
 
-    user_prompt = f"""
 NEVER extract any of the following:
 - Pronouns (you, me, I, he, she, they, we, us, it, them, him, her, this, that, those)
 - Abstract concepts or feelings (joy, balance, growth, resilience, happiness, passion, motivation)
@@ -175,15 +171,6 @@ Pronoun references such as he/she/they or this/that/those should be disambiguate
 reference entities. Only extract distinct entities from the CURRENT MESSAGE.
 
 {_entity_types_section(context)}
-
-<PREVIOUS MESSAGES>
-{to_prompt_json([ep for ep in context['previous_episodes']])}
-</PREVIOUS MESSAGES>
-
-<CURRENT MESSAGE>
-{context['episode_content']}
-</CURRENT MESSAGE>
-
 1. **Speaker Extraction**: Always extract the speaker (the part before the colon `:` in each dialogue line) as the first entity node.
    - If the speaker is mentioned again in the message, treat both mentions as a **single entity**.
 
@@ -241,6 +228,15 @@ Message: "Jordan: We won by a tight score. Scoring that last basket felt incredi
 Good extractions: "Jordan" (speaker)
 Do NOT extract: "basket" (ambiguous bare noun that depends on sentence context)
 </EXAMPLE>
+"""
+
+    user_prompt = f"""<PREVIOUS MESSAGES>
+{to_prompt_json([ep for ep in context['previous_episodes']])}
+</PREVIOUS MESSAGES>
+
+<CURRENT MESSAGE>
+{context['episode_content']}
+</CURRENT MESSAGE>
 
 {context['custom_extraction_instructions']}
 """
@@ -251,14 +247,10 @@ Do NOT extract: "basket" (ambiguous bare noun that depends on sentence context)
 
 
 def extract_json(context: dict[str, Any]) -> list[Message]:
-    sys_prompt = (
-        'You are an entity extraction specialist for JSON data. '
-        'NEVER extract abstract concepts, dates, or generic field values.'
-    )
-
     classification_instruction = _classification_instruction_inline(context)
 
-    user_prompt = f"""
+    sys_prompt = f"""You are an entity extraction specialist for JSON data. NEVER extract abstract concepts, dates, or generic field values.
+
 NEVER extract:
 - Date, time, or timestamp values
 - Abstract concepts or generic field values (e.g., "true", "active", "pending")
@@ -278,15 +270,6 @@ NEVER extract:
 Extract entities from the JSON and classify each.
 
 {_entity_types_section(context)}
-
-<SOURCE DESCRIPTION>
-{context['source_description']}
-</SOURCE DESCRIPTION>
-
-<JSON>
-{context['episode_content']}
-</JSON>
-
 Guidelines:
 1. Extract the primary entity the JSON represents (e.g., a "name" or "user" field).
 2. Extract named entities referenced in other properties throughout the JSON structure.
@@ -294,8 +277,6 @@ Guidelines:
 4. Be explicit in naming entities — use full names when available.
 5. Use the most specific form present in the data (e.g., "road cycling" not "cycling").
 6. If a value would not be meaningful and distinguishable when read alone later, do NOT extract it.
-
-{context['custom_extraction_instructions']}
 
 Given the above source description and JSON, extract relevant entities from the provided JSON.
 {classification_instruction}
@@ -311,6 +292,17 @@ JSON: {{"author": "Alex", "attachment_type": "photo", "event_name": "event", "ag
 Good extractions: "Alex" (Person)
 Do NOT extract: "photo" (generic media noun), "event" (generic event noun), "government" (broad institutional noun)
 </EXAMPLE>
+"""
+
+    user_prompt = f"""<SOURCE DESCRIPTION>
+{context['source_description']}
+</SOURCE DESCRIPTION>
+
+<JSON>
+{context['episode_content']}
+</JSON>
+
+{context['custom_extraction_instructions']}
 """
     return [
         Message(role='system', content=sys_prompt),
@@ -355,7 +347,6 @@ Extract entities from the TEXT that are **explicitly mentioned**.
 Only extract entities specific enough to be uniquely identifiable — ask: "Could this have its own Wikipedia article or database entry?"
 
 {_entity_types_section(context)}
-
 Guidelines:
 1. Extract named entities and specific, concrete things.
 2. Do not create nodes for relationships or actions.
@@ -398,11 +389,17 @@ Do NOT extract: "pic" (generic media noun), "event" (generic event noun), "baske
 def classify_nodes(context: dict[str, Any]) -> list[Message]:
     sys_prompt = (
         'You are an entity classification specialist. '
-        'NEVER assign types not listed in ENTITY TYPES.'
+        'NEVER assign types not listed in ENTITY TYPES.\n\n'
+        'Given the above conversation, extracted entities, and provided entity types and their descriptions, '
+        'classify the extracted entities.\n\n'
+        'Guidelines:\n'
+        '1. Each entity must have exactly one type.\n'
+        '2. NEVER use types not listed in ENTITY TYPES.\n'
+        '3. If none of the provided entity types accurately classify an extracted entity, '
+        'the type should be set to None.'
     )
 
-    user_prompt = f"""
-<PREVIOUS MESSAGES>
+    user_prompt = f"""<PREVIOUS MESSAGES>
 {to_prompt_json([ep for ep in context['previous_episodes']])}
 </PREVIOUS MESSAGES>
 
@@ -417,13 +414,6 @@ def classify_nodes(context: dict[str, Any]) -> list[Message]:
 <ENTITY TYPES>
 {context['entity_types']}
 </ENTITY TYPES>
-
-Given the above conversation, extracted entities, and provided entity types and their descriptions, classify the extracted entities.
-
-Guidelines:
-1. Each entity must have exactly one type.
-2. NEVER use types not listed in ENTITY TYPES.
-3. If none of the provided entity types accurately classify an extracted entity, the type should be set to None.
 """
     return [
         Message(role='system', content=sys_prompt),
@@ -432,22 +422,18 @@ Guidelines:
 
 
 def extract_attributes(context: dict[str, Any]) -> list[Message]:
-    return [
-        Message(
-            role='system',
-            content='You are an entity attribute extraction specialist. NEVER hallucinate or infer values not explicitly stated.',
-        ),
-        Message(
-            role='user',
-            content=f"""
-Given the MESSAGES and the following ENTITY, update any of its attributes based on the information provided
-in MESSAGES. Use the provided attribute descriptions to better understand how each attribute should be determined.
+    sys_prompt = (
+        'You are an entity attribute extraction specialist. '
+        'NEVER hallucinate or infer values not explicitly stated.\n\n'
+        'Given the MESSAGES and the following ENTITY, update any of its attributes based on the '
+        'information provided\nin MESSAGES. Use the provided attribute descriptions to better '
+        'understand how each attribute should be determined.\n\n'
+        'Guidelines:\n'
+        '1. NEVER hallucinate or infer property values — only use values explicitly stated in the MESSAGES.\n'
+        '2. Only use the provided MESSAGES and ENTITY to set attribute values.'
+    )
 
-Guidelines:
-1. NEVER hallucinate or infer property values — only use values explicitly stated in the MESSAGES.
-2. Only use the provided MESSAGES and ENTITY to set attribute values.
-
-<MESSAGES>
+    user_prompt = f"""<MESSAGES>
 {to_prompt_json(context['previous_episodes'])}
 {to_prompt_json(context['episode_content'])}
 </MESSAGES>
@@ -455,53 +441,49 @@ Guidelines:
 <ENTITY>
 {context['node']}
 </ENTITY>
-""",
-        ),
+"""
+    return [
+        Message(role='system', content=sys_prompt),
+        Message(role='user', content=user_prompt),
     ]
 
 
 def extract_summary(context: dict[str, Any]) -> list[Message]:
+    sys_prompt = (
+        'You are a helpful assistant that extracts entity summaries from the provided text.\n\n'
+        f'Given the MESSAGES and the ENTITY, update the summary that combines relevant information '
+        f'about the entity\nfrom the messages and relevant information from the existing summary. '
+        f'Summary must be under {MAX_SUMMARY_CHARS} characters.\n\n'
+        f'{summary_instructions}'
+    )
+
+    user_prompt = f"""<MESSAGES>
+{to_prompt_json(context['previous_episodes'])}
+{to_prompt_json(context['episode_content'])}
+</MESSAGES>
+
+<ENTITY>
+{context['node']}
+</ENTITY>
+"""
     return [
-        Message(
-            role='system',
-            content='You are a helpful assistant that extracts entity summaries from the provided text.',
-        ),
-        Message(
-            role='user',
-            content=f"""
-        Given the MESSAGES and the ENTITY, update the summary that combines relevant information about the entity
-        from the messages and relevant information from the existing summary. Summary must be under {MAX_SUMMARY_CHARS} characters.
-
-        {summary_instructions}
-
-        <MESSAGES>
-        {to_prompt_json(context['previous_episodes'])}
-        {to_prompt_json(context['episode_content'])}
-        </MESSAGES>
-
-        <ENTITY>
-        {context['node']}
-        </ENTITY>
-        """,
-        ),
+        Message(role='system', content=sys_prompt),
+        Message(role='user', content=user_prompt),
     ]
 
 
 def extract_summaries_batch(context: dict[str, Any]) -> list[Message]:
-    return [
-        Message(
-            role='system',
-            content='You are a helpful assistant that generates concise entity summaries from provided context.',
-        ),
-        Message(
-            role='user',
-            content=f"""
-Given the MESSAGES and a list of ENTITIES, generate an updated summary for each entity that needs one.
-Each summary must be under {MAX_SUMMARY_CHARS} characters.
+    sys_prompt = (
+        'You are a helpful assistant that generates concise entity summaries from provided context.\n\n'
+        f'Given the MESSAGES and a list of ENTITIES, generate an updated summary for each entity '
+        f'that needs one.\nEach summary must be under {MAX_SUMMARY_CHARS} characters.\n\n'
+        f'{summary_instructions}\n'
+        'For each entity, combine relevant information from the MESSAGES with any existing summary content.\n'
+        'Only return summaries for entities that have meaningful information to summarize.\n'
+        'If an entity has no relevant information in the messages and no existing summary, you may skip it.'
+    )
 
-{summary_instructions}
-
-<MESSAGES>
+    user_prompt = f"""<MESSAGES>
 {to_prompt_json(context['previous_episodes'])}
 {to_prompt_json(context['episode_content'])}
 </MESSAGES>
@@ -509,12 +491,10 @@ Each summary must be under {MAX_SUMMARY_CHARS} characters.
 <ENTITIES>
 {to_prompt_json(context['entities'])}
 </ENTITIES>
-
-For each entity, combine relevant information from the MESSAGES with any existing summary content.
-Only return summaries for entities that have meaningful information to summarize.
-If an entity has no relevant information in the messages and no existing summary, you may skip it.
-""",
-        ),
+"""
+    return [
+        Message(role='system', content=sys_prompt),
+        Message(role='user', content=user_prompt),
     ]
 
 
@@ -529,29 +509,26 @@ def reclassify_entity(context: dict[str, Any]) -> list[Message]:
     sys_prompt = (
         'You are an AI assistant that classifies entities into semantic ontological types. '
         'Given an entity name and its summary, determine the most appropriate type for the entity. '
-        'Return a single PascalCase type name that best describes the entity.'
+        'Return a single PascalCase type name that best describes the entity.\n\n'
+        'Classify this entity into a single semantic type. Choose a meaningful ontological type such as:\n'
+        'Person, Organization, Location, Event, Concept, Technology, Product, Document, Project, etc.\n\n'
+        'Guidelines:\n'
+        '1. Return exactly one PascalCase type name (e.g., "Person", "Organization", "Concept").\n'
+        '2. Choose the most specific applicable type — prefer "Person" over "Entity" when the entity is clearly a person.\n'
+        '3. If the entity cannot be meaningfully classified beyond "Entity", return "Entity".\n'
+        '4. Do not invent overly specific or compound types — keep types general and reusable.'
     )
 
     entity_name = _strip_xml_tags(str(context['entity_name']))
     entity_summary = _strip_xml_tags(str(context['entity_summary']))
 
-    user_prompt = f"""
-<ENTITY NAME>
+    user_prompt = f"""<ENTITY NAME>
 {entity_name}
 </ENTITY NAME>
 
 <ENTITY SUMMARY>
 {entity_summary}
 </ENTITY SUMMARY>
-
-Classify this entity into a single semantic type. Choose a meaningful ontological type such as:
-Person, Organization, Location, Event, Concept, Technology, Product, Document, Project, etc.
-
-Guidelines:
-1. Return exactly one PascalCase type name (e.g., "Person", "Organization", "Concept").
-2. Choose the most specific applicable type — prefer "Person" over "Entity" when the entity is clearly a person.
-3. If the entity cannot be meaningfully classified beyond "Entity", return "Entity".
-4. Do not invent overly specific or compound types — keep types general and reusable.
 """
     return [
         Message(role='system', content=sys_prompt),
@@ -628,22 +605,19 @@ the arts center."
 
 
 def extract_entity_summaries_from_episodes(context: dict[str, Any]) -> list[Message]:
-    return [
-        Message(
-            role='system',
-            content=_entity_episode_summary_system_prompt,
-        ),
-        Message(
-            role='user',
-            content=f"""NEVER include meta-language about the summarization process. \
-Use ONLY facts from the provided EPISODES.
-Each summary must be under {MAX_SUMMARY_CHARS} characters. Write 2-6 dense sentences in third person. \
-Preserve all material names, roles, dates, counts, and changes over time that are explicitly supported.
+    sys_prompt = (
+        _entity_episode_summary_system_prompt
+        + f'\n\nNEVER include meta-language about the summarization process. '
+        f'Use ONLY facts from the provided EPISODES.\n'
+        f'Each summary must be under {MAX_SUMMARY_CHARS} characters. Write 2-6 dense sentences in third person. '
+        f'Preserve all material names, roles, dates, counts, and changes over time that are explicitly supported.\n\n'
+        f'For each entity below, generate an updated summary using ONLY the provided EPISODES and any '
+        f'existing summary already on the entity.\n\n'
+        f'Only return summaries for entities that have meaningful information to summarize.\n'
+        f'If an entity has no relevant information in the episodes and no existing summary, you may skip it.'
+    )
 
-For each entity below, generate an updated summary using ONLY the provided EPISODES and any \
-existing summary already on the entity.
-
-<EPISODES>
+    user_prompt = f"""<EPISODES>
 {to_prompt_json(context['previous_episodes'])}
 {to_prompt_json(context['episode_content'])}
 </EPISODES>
@@ -651,11 +625,10 @@ existing summary already on the entity.
 <ENTITIES>
 {to_prompt_json(context['entities'])}
 </ENTITIES>
-
-Only return summaries for entities that have meaningful information to summarize.
-If an entity has no relevant information in the episodes and no existing summary, you may skip it.
-""",
-        ),
+"""
+    return [
+        Message(role='system', content=sys_prompt),
+        Message(role='user', content=user_prompt),
     ]
 
 
