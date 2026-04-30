@@ -377,7 +377,7 @@ async def _collect_candidate_nodes(
     return [_merge_candidate_nodes(result, existing_nodes_override) for result in search_results]
 
 
-def _build_dedup_search_filter(node: EntityNode) -> SearchFilters:
+def _build_dedup_search_filter(_node: EntityNode) -> SearchFilters:
     """Return an unfiltered SearchFilters for dedup candidate search.
 
     Label-scoped filtering was removed because the same real-world entity can receive
@@ -392,7 +392,7 @@ async def _semantic_candidate_search(
     clients: GraphitiClients,
     extracted_nodes: list[EntityNode],
 ) -> list[list[EntityNode]]:
-    """Run hybrid HNSW+BM25 candidate search per extracted node with entity-type filtering.
+    """Run hybrid HNSW+BM25 candidate search per extracted node without label filtering.
 
     For each node, HNSW and BM25 results are fetched concurrently, merged HNSW-first,
     deduplicated by UUID, and capped at NODE_DEDUP_CANDIDATE_LIMIT.
