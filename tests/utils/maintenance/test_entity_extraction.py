@@ -314,9 +314,7 @@ class TestExtractNodesPromptSelection:
 
         episode = _make_episode(source=EpisodeType.text)
 
-        await extract_nodes(
-            clients, episode, previous_episodes=[], entity_types={'Person': Person}
-        )
+        await extract_nodes(clients, episode, previous_episodes=[], entity_types={'Person': Person})
 
         call_kwargs = llm_generate.call_args[1]
         assert call_kwargs.get('response_model') is ExtractedEntities

@@ -421,7 +421,9 @@ class TestWalIntegration:
             driver = FalkorDriver(wal_dir=str(wal_dir), database='test_db')
         driver.client = mock_client
 
-        await driver.execute_query('MERGE (n:Entity {uuid: $uuid}) SET n.name = $name', uuid='abc', name='Alice')
+        await driver.execute_query(
+            'MERGE (n:Entity {uuid: $uuid}) SET n.name = $name', uuid='abc', name='Alice'
+        )
 
         await driver.close()
 

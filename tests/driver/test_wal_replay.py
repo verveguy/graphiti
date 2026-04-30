@@ -265,9 +265,7 @@ class TestReplayWalEndToEnd:
         writer = WalWriter(wal_dir, max_events_per_file=3)
 
         for i in range(7):
-            await writer.log_mutation(
-                f'CREATE (n:Node{i})', {}, database='db'
-            )
+            await writer.log_mutation(f'CREATE (n:Node{i})', {}, database='db')
         await writer.close()
 
         # Should have 3 files: 3 + 3 + 1

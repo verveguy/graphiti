@@ -114,9 +114,7 @@ async def replay_wal(
                         # Build indices lazily on first encounter of each database
                         if event_db not in indexed_databases:
                             logger.info('Building indices on %s...', event_db)
-                            db_driver = (
-                                driver if event_db == database else driver.clone(event_db)
-                            )
+                            db_driver = driver if event_db == database else driver.clone(event_db)
                             await db_driver.build_indices_and_constraints()
                             indexed_databases.add(event_db)
 
