@@ -421,16 +421,13 @@ Guidelines:
 
 
 def extract_attributes(context: dict[str, Any]) -> list[Message]:
-    sys_prompt = (
-        'You are an entity attribute extraction specialist. '
-        'NEVER hallucinate or infer values not explicitly stated.\n\n'
-        'Given the MESSAGES and the following ENTITY, update any of its attributes based on the '
-        'information provided\nin MESSAGES. Use the provided attribute descriptions to better '
-        'understand how each attribute should be determined.\n\n'
-        'Guidelines:\n'
-        '1. NEVER hallucinate or infer property values — only use values explicitly stated in the MESSAGES.\n'
-        '2. Only use the provided MESSAGES and ENTITY to set attribute values.'
-    )
+    sys_prompt = """You are an entity attribute extraction specialist. NEVER hallucinate or infer values not explicitly stated.
+
+Given the MESSAGES and the following ENTITY, update any of its attributes based on the information provided in MESSAGES. Use the provided attribute descriptions to better understand how each attribute should be determined.
+
+Guidelines:
+1. NEVER hallucinate or infer property values — only use values explicitly stated in the MESSAGES.
+2. Only use the provided MESSAGES and ENTITY to set attribute values."""
 
     user_prompt = f"""<MESSAGES>
 {to_prompt_json(context['previous_episodes'])}
@@ -448,13 +445,11 @@ def extract_attributes(context: dict[str, Any]) -> list[Message]:
 
 
 def extract_summary(context: dict[str, Any]) -> list[Message]:
-    sys_prompt = (
-        'You are a helpful assistant that extracts entity summaries from the provided text.\n\n'
-        f'Given the MESSAGES and the ENTITY, update the summary that combines relevant information '
-        f'about the entity\nfrom the messages and relevant information from the existing summary. '
-        f'Summary must be under {MAX_SUMMARY_CHARS} characters.\n\n'
-        f'{summary_instructions}'
-    )
+    sys_prompt = f"""You are a helpful assistant that extracts entity summaries from the provided text.
+
+Given the MESSAGES and the ENTITY, update the summary that combines relevant information about the entity from the messages and relevant information from the existing summary. Summary must be under {MAX_SUMMARY_CHARS} characters.
+
+{summary_instructions}"""
 
     user_prompt = f"""<MESSAGES>
 {to_prompt_json(context['previous_episodes'])}
@@ -604,17 +599,15 @@ the arts center."
 
 
 def extract_entity_summaries_from_episodes(context: dict[str, Any]) -> list[Message]:
-    sys_prompt = (
-        _entity_episode_summary_system_prompt
-        + f'\n\nNEVER include meta-language about the summarization process. '
-        f'Use ONLY facts from the provided EPISODES.\n'
-        f'Each summary must be under {MAX_SUMMARY_CHARS} characters. Write 2-6 dense sentences in third person. '
-        f'Preserve all material names, roles, dates, counts, and changes over time that are explicitly supported.\n\n'
-        f'For each entity below, generate an updated summary using ONLY the provided EPISODES and any '
-        f'existing summary already on the entity.\n\n'
-        f'Only return summaries for entities that have meaningful information to summarize.\n'
-        f'If an entity has no relevant information in the episodes and no existing summary, you may skip it.'
-    )
+    sys_prompt = f"""{_entity_episode_summary_system_prompt}
+
+NEVER include meta-language about the summarization process. Use ONLY facts from the provided EPISODES.
+Each summary must be under {MAX_SUMMARY_CHARS} characters. Write 2-6 dense sentences in third person. Preserve all material names, roles, dates, counts, and changes over time that are explicitly supported.
+
+For each entity below, generate an updated summary using ONLY the provided EPISODES and any existing summary already on the entity.
+
+Only return summaries for entities that have meaningful information to summarize.
+If an entity has no relevant information in the episodes and no existing summary, you may skip it."""
 
     user_prompt = f"""<EPISODES>
 {to_prompt_json(context['previous_episodes'])}
