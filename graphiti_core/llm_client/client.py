@@ -232,6 +232,10 @@ class LLMClient(ABC):
         else:
             return 'unknown'
 
+    async def warmup(self, messages: list[Message]) -> None:
+        """Seed the provider's server-side prompt cache. No-op for non-Anthropic clients."""
+        return
+
     def _get_failed_generation_log(self, messages: list[Message], output: str | None) -> str:
         """
         Log structural metadata and truncated raw output for debugging failed

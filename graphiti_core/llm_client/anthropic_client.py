@@ -436,6 +436,21 @@ class AnthropicClient(LLMClient):
         )
         return response_dict
 
+    async def warmup(self, messages: list[Message]) -> None:
+        """Seed the Anthropic server-side prompt cache before bulk fan-out.
+
+        Only fires when cache_mode='system-block'. In that mode the cache key
+        is the system block, so a single max_tokens=1 call per distinct system
+        prompt is enough to warm the cache for all subsequent concurrent calls.
+        """
+        if self.cache_mode != 'system-block':
+            return
+        warmup_msgs = [messages[0], Message(role='user', content='.')]
+        try:
+            await self._call_anthropic_api(warmup_msgs, max_tokens=1)
+        except Exception as e:
+            logger.debug(f'Cache warmup call failed (non-fatal): {e}')
+
     async def generate_response(
         self,
         messages: list[Message],

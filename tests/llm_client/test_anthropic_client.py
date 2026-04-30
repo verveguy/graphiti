@@ -478,5 +478,103 @@ class TestAnthropicClientGenerateResponse:
         assert result['test_field'] == 'correct_value'
 
 
+class TestAnthropicClientWarmup:
+    """Tests for AnthropicClient.warmup — prompt-cache pre-seeding."""
+
+    def _make_warmup_client(self, mock_async_anthropic, cache_mode: str) -> AnthropicClient:
+        with patch('anthropic.AsyncAnthropic', return_value=mock_async_anthropic):
+            config = LLMConfig(
+                api_key='k',
+                model='test-model',
+                temperature=0.0,
+                max_tokens=100,
+                cache_mode=cache_mode,
+            )
+            client = AnthropicClient(config=config)
+            client.client = mock_async_anthropic
+        return client
+
+    @pytest.mark.asyncio
+    async def test_warmup_disabled_mode_no_api_call(self, mock_async_anthropic):
+        """warmup is a no-op when cache_mode='disabled'."""
+        client = self._make_warmup_client(mock_async_anthropic, 'disabled')
+        messages = [
+            Message(role='system', content='System message'),
+            Message(role='user', content='User message'),
+        ]
+        await client.warmup(messages)
+        mock_async_anthropic.messages.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_warmup_top_level_mode_no_api_call(self, mock_async_anthropic):
+        """warmup is a no-op when cache_mode='top-level' (cache key includes user message)."""
+        client = self._make_warmup_client(mock_async_anthropic, 'top-level')
+        messages = [
+            Message(role='system', content='System message'),
+            Message(role='user', content='User message'),
+        ]
+        await client.warmup(messages)
+        mock_async_anthropic.messages.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_warmup_system_block_mode_calls_api_with_max_tokens_1(
+        self, mock_async_anthropic
+    ):
+        """warmup fires one max_tokens=1 call when cache_mode='system-block'."""
+        content_item = MagicMock()
+        content_item.type = 'tool_use'
+        content_item.input = {}
+        mock_async_anthropic.messages.create.return_value = _make_response([content_item])
+
+        client = self._make_warmup_client(mock_async_anthropic, 'system-block')
+        messages = [
+            Message(role='system', content='System message'),
+            Message(role='user', content='User message'),
+        ]
+        await client.warmup(messages)
+
+        mock_async_anthropic.messages.create.assert_called_once()
+        call_kwargs = mock_async_anthropic.messages.create.call_args.kwargs
+        assert call_kwargs['max_tokens'] == 1
+        # The trivial user message ('.') is sent, not the original user message
+        assert call_kwargs['messages'] == [{'role': 'user', 'content': '.'}]
+
+    @pytest.mark.asyncio
+    async def test_warmup_system_block_uses_system_message_as_cache_block(
+        self, mock_async_anthropic
+    ):
+        """warmup sends the real system message so the cache block matches real calls."""
+        content_item = MagicMock()
+        content_item.type = 'tool_use'
+        content_item.input = {}
+        mock_async_anthropic.messages.create.return_value = _make_response([content_item])
+
+        client = self._make_warmup_client(mock_async_anthropic, 'system-block')
+        messages = [
+            Message(role='system', content='My stable system prompt'),
+            Message(role='user', content='Some episode content'),
+        ]
+        await client.warmup(messages)
+
+        call_kwargs = mock_async_anthropic.messages.create.call_args.kwargs
+        system_arg = call_kwargs['system']
+        assert isinstance(system_arg, list)
+        assert system_arg[0]['text'] == 'My stable system prompt'
+        assert system_arg[0]['cache_control'] == {'type': 'ephemeral'}
+
+    @pytest.mark.asyncio
+    async def test_warmup_exception_does_not_propagate(self, mock_async_anthropic):
+        """An API error during warmup is swallowed; the caller sees no exception."""
+        mock_async_anthropic.messages.create.side_effect = RuntimeError('network error')
+
+        client = self._make_warmup_client(mock_async_anthropic, 'system-block')
+        messages = [
+            Message(role='system', content='System message'),
+            Message(role='user', content='User message'),
+        ]
+        # Must not raise
+        await client.warmup(messages)
+
+
 if __name__ == '__main__':
     pytest.main(['-v', 'test_anthropic_client.py'])
