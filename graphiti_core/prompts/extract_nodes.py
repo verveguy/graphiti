@@ -226,7 +226,7 @@ reference entities. Only extract distinct entities from the CURRENT MESSAGE.
 
 <EXAMPLE>
 Message: "Jordan: We just moved to Denver last month. My spouse started a new role at Lockheed Martin and I enrolled in a ceramics workshop at the Belmont Arts Center."
-Good extractions: "Jordan" (speaker), "Denver" (Location), "Lockheed Martin" (Organization), "Belmont Arts Center" (Location), "ceramics" (Topic)
+Good extractions: "Jordan" (speaker), "Denver" (Location), "Lockheed Martin" (Organization), "Belmont Arts Center" (Location), "ceramics" (Concept)
 Do NOT extract: "spouse" (generic reference — extract only if named), "new role" (not an entity), "last month" (temporal), "we" (pronoun)
 </EXAMPLE>
 
@@ -238,7 +238,7 @@ Do NOT extract: "dad" (bare relational term — qualify as "Nisha's dad"), "dogs
 
 <EXAMPLE>
 Message: "Mary: I forgot Trigger's leash so I couldn't take him on a dog walk. After that I went road cycling in my new wool coat."
-Good extractions: "Mary" (speaker), "Trigger" (animal name), "dog leash" (Object), "road cycling" (Topic), "wool coat" (Object)
+Good extractions: "Mary" (speaker), "Trigger" (named entity), "dog leash" (Product), "road cycling" (Process), "wool coat" (Product)
 Do NOT extract: "leash" (too generic — use "dog leash"), "cycling" (too generic — use "road cycling"), "coat" (too generic — use "wool coat"), "dog walk" (activity, not an entity)
 </EXAMPLE>
 
@@ -387,7 +387,7 @@ Guidelines:
 
 <EXAMPLE>
 Text: "Dr. Amara Osei presented her migraine study results at the AAN conference. The study tracked 340 patients using a new CGRP combination protocol."
-Good extractions: "Dr. Amara Osei" (Person), "AAN" (Organization), "migraine study" (Topic), "CGRP combination protocol" (Object)
+Good extractions: "Dr. Amara Osei" (Person), "AAN" (Organization), "migraine study" (Document), "CGRP combination protocol" (Process)
 Do NOT extract: "results" (generic noun), "340" (number), "patients" (generic noun), "conference" (generic without a specific name)
 </EXAMPLE>
 
