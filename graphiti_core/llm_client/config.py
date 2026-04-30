@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 from enum import Enum
+from typing import Literal
 
 DEFAULT_MAX_TOKENS = 16384
 DEFAULT_TEMPERATURE = 1
@@ -23,6 +24,10 @@ DEFAULT_TEMPERATURE = 1
 class ModelSize(Enum):
     small = 'small'
     medium = 'medium'
+
+
+CacheMode = Literal['disabled', 'top-level', 'system-block']
+CacheTTL = Literal['5m', '1h']
 
 
 class LLMConfig:
@@ -42,6 +47,9 @@ class LLMConfig:
         temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         small_model: str | None = None,
+        cache_mode: CacheMode = 'disabled',
+        cache_ttl: CacheTTL = '5m',
+        cache_padding_text: str | None = None,
     ):
         """
         Initialize the LLMConfig with the provided parameters.
@@ -66,3 +74,18 @@ class LLMConfig:
         self.small_model = small_model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        # Anthropic prompt-caching configuration. See docs/prompt_caching.md.
+        # 'disabled' is the safe default: the previous 'top-level' default writes
+        # full-prompt caches that almost never hit reads in graphiti's typical
+        # per-episode workload, costing the +25% write surcharge for ~zero benefit.
+        # Use 'system-block' once prompts are restructured so static content lives
+        # in the system message and clears the per-model cacheable threshold.
+        self.cache_mode: CacheMode = cache_mode
+        self.cache_ttl: CacheTTL = cache_ttl
+        # Optional substantive content appended to the system prompt under
+        # cache_mode='system-block'. Use to clear the per-model cacheable
+        # threshold (~2048 tokens for Sonnet 4.x, ~4500 for Haiku 4.x). Should
+        # be neutral domain content (extended entity-type definitions,
+        # additional few-shot examples) — task-shaped instructions in this
+        # field have been observed to bias extraction.
+        self.cache_padding_text = cache_padding_text

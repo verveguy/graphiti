@@ -319,14 +319,20 @@ Do NOT extract: "photo" (generic media noun), "event" (generic event noun), "gov
 
 
 def extract_text(context: dict[str, Any]) -> list[Message]:
-    sys_prompt = (
-        'You are an entity extraction specialist for unstructured text. '
-        'NEVER extract abstract concepts, feelings, or generic words.'
-    )
-
     classification_instruction = _classification_instruction_inline(context)
 
-    user_prompt = f"""
+    # Restructured prompt (cache-friendly):
+    # - All stable instructions, the entity-types section, classification rules,
+    #   and examples live in the system message.
+    # - User message contains only the per-episode dynamic content (TEXT and any
+    #   custom_extraction_instructions provided at call time).
+    # When LLMConfig.cache_mode='system-block' is enabled and the system block
+    # clears the per-model cacheable threshold (~2048 tokens for Sonnet 4.x,
+    # ~4500 for Haiku 4.x — possibly via cache_padding_text), this layout
+    # produces real cache reads on calls 2..N.
+    sys_prompt = f"""You are an entity extraction specialist for unstructured text.
+NEVER extract abstract concepts, feelings, or generic words.
+
 NEVER extract:
 - Pronouns (you, me, he, she, they, it, them, him, her, we, us, this, that, those)
 - Abstract concepts (joy, balance, growth, resilience, passion, motivation)
@@ -350,10 +356,6 @@ Only extract entities specific enough to be uniquely identifiable — ask: "Coul
 
 {_entity_types_section(context)}
 
-<TEXT>
-{context['episode_content']}
-</TEXT>
-
 Guidelines:
 1. Extract named entities and specific, concrete things.
 2. Do not create nodes for relationships or actions.
@@ -368,8 +370,6 @@ Guidelines:
 
 {classification_instruction}
 
-{context['custom_extraction_instructions']}
-
 <EXAMPLE>
 Text: "Dr. Amara Osei presented her migraine study results at the AAN conference. The study tracked 340 patients using a new CGRP combination protocol."
 Good extractions: "Dr. Amara Osei" (Person), "AAN" (Organization), "migraine study" (Topic), "CGRP combination protocol" (Object)
@@ -381,6 +381,13 @@ Text: "Alex shared a pic after the event and said scoring the last basket felt i
 Good extractions: "Alex" (Person)
 Do NOT extract: "pic" (generic media noun), "event" (generic event noun), "basket" (ambiguous bare noun)
 </EXAMPLE>
+"""
+
+    user_prompt = f"""<TEXT>
+{context['episode_content']}
+</TEXT>
+
+{context['custom_extraction_instructions']}
 """
     return [
         Message(role='system', content=sys_prompt),

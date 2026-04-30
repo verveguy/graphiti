@@ -70,31 +70,9 @@ def edge(context: dict[str, Any]) -> list[Message]:
 </FACT_TYPES>
 """
 
-    return [
-        Message(
-            role='system',
-            content='You are an expert fact extractor that extracts fact triples from text. '
-            '1. Extracted fact triples should also be extracted with relevant date information.'
-            '2. Treat the CURRENT TIME as the time the CURRENT MESSAGE was sent. All temporal information should be extracted relative to this time.',
-        ),
-        Message(
-            role='user',
-            content=f"""
-<PREVIOUS_MESSAGES>
-{to_prompt_json([ep for ep in context['previous_episodes']])}
-</PREVIOUS_MESSAGES>
-
-<CURRENT_MESSAGE>
-{context['episode_content']}
-</CURRENT_MESSAGE>
-
-<ENTITIES>
-{to_prompt_json(context['nodes'])}
-</ENTITIES>
-
-<REFERENCE_TIME>
-{context['reference_time']}  # ISO 8601 (UTC); used to resolve relative time mentions
-</REFERENCE_TIME>
+    sys_prompt = f"""You are an expert fact extractor that extracts fact triples from text.
+1. Extracted fact triples should also be extracted with relevant date information.
+2. Treat the CURRENT TIME as the time the CURRENT MESSAGE was sent. All temporal information should be extracted relative to this time.
 {edge_types_section}
 # TASK
 Extract all factual relationships between the given ENTITIES based on the CURRENT MESSAGE.
@@ -105,9 +83,6 @@ Only extract facts that:
 - Facts should include entity names rather than pronouns whenever possible.
 
 You may use information from the PREVIOUS MESSAGES only to disambiguate references or support continuity.
-
-
-{context['custom_extraction_instructions']}
 
 # EXTRACTION RULES
 
@@ -136,8 +111,30 @@ You may use information from the PREVIOUS MESSAGES only to disambiguate referenc
 - Leave both fields `null` if no explicit or resolvable time is stated.
 - If only a date is mentioned (no time), assume 00:00:00.
 - If only a year is mentioned, use January 1st at 00:00:00.
-        """,
-        ),
+"""
+
+    user_prompt = f"""<PREVIOUS_MESSAGES>
+{to_prompt_json([ep for ep in context['previous_episodes']])}
+</PREVIOUS_MESSAGES>
+
+<CURRENT_MESSAGE>
+{context['episode_content']}
+</CURRENT_MESSAGE>
+
+<ENTITIES>
+{to_prompt_json(context['nodes'])}
+</ENTITIES>
+
+<REFERENCE_TIME>
+{context['reference_time']}  # ISO 8601 (UTC); used to resolve relative time mentions
+</REFERENCE_TIME>
+
+{context['custom_extraction_instructions']}
+"""
+
+    return [
+        Message(role='system', content=sys_prompt),
+        Message(role='user', content=user_prompt),
     ]
 
 

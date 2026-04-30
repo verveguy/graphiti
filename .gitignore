@@ -170,3 +170,4 @@ cache.db*
 # Claude Code local-only state
 .claude/settings.local.json
 .claude/worktrees/
+/cache-analysis/
