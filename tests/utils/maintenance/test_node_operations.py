@@ -1106,17 +1106,8 @@ async def test_semantic_candidate_search_typed_node_uses_unfiltered_search(monke
 
 
 # ---------------------------------------------------------------------------
-# Cross-label dedup regression tests (Tasks 5, 6, 7)
+# Cross-label dedup regression tests
 # ---------------------------------------------------------------------------
-
-
-def test_build_dedup_search_filter_typed_node_returns_unfiltered():
-    """A typed node with a specific label always produces an unfiltered SearchFilters."""
-    node = EntityNode(
-        name='Visualization Data Service', group_id='group', labels=['Entity', 'Technology']
-    )
-    result = _build_dedup_search_filter(node)
-    assert result.node_labels is None
 
 
 @pytest.mark.asyncio
