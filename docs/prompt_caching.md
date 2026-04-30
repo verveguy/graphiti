@@ -114,3 +114,31 @@ LLMConfig(
 
 Default `cache_mode='disabled'` — don't pay for caching infrastructure if
 you're not amortizing across many calls.
+
+## Cache warmup
+
+When `add_episode_bulk` is called with a large batch (e.g., `SEMAPHORE_LIMIT=20`),
+all 20 concurrent LLM calls race to write the same Anthropic cache prefix. Only
+one write is needed; the other 19 each pay the +25% cache-write surcharge for
+content that ends up duplicated.
+
+To prevent this thundering-herd effect, `add_episode_bulk` issues a warmup
+automatically before the fan-out. The warmup fires one `max_tokens=1` call per
+distinct prompt type (up to 6 calls: one per `EpisodeType` variant in the batch,
+plus `extract_edges`, `dedupe_nodes`, and `extract_attributes`). These calls
+seed the Anthropic server-side cache so that the subsequent concurrent requests
+all hit the warm cache.
+
+### When warmup fires
+
+| `cache_mode` | warmup behavior |
+|---|---|
+| `'disabled'` (default) | No-op — no API call is made. |
+| `'top-level'` | No-op — cache key includes the user message, so a static warmup call would seed an entry that real calls (with varying episode content) will never hit. |
+| `'system-block'` | Fires one `max_tokens=1` call per distinct prompt type before the fan-out. |
+
+### Best-effort semantics
+
+Warmup failures are caught and logged at `DEBUG` level. A failed warmup leaves
+the fan-out unprimed but does not abort the bulk operation — the batch proceeds
+and pays the cache-write surcharge as before.
