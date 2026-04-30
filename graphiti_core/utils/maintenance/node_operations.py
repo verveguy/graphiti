@@ -297,7 +297,7 @@ def _create_entity_nodes_freeform(
             logger.debug(f'Excluding entity "{extracted_entity.name}": all labels excluded')
             continue
 
-        labels: list[str] = sorted(set(['Entity'] + specific_labels))
+        labels: list[str] = ['Entity'] + sorted(set(specific_labels))
 
         new_node = EntityNode(
             name=extracted_entity.name,
@@ -330,7 +330,8 @@ def _collapse_exact_duplicate_extracted_nodes(
             ordered_names.append(normalized_name)
             continue
 
-        existing.labels = sorted(set(existing.labels) | set(node.labels))
+        merged = set(existing.labels) | set(node.labels)
+        existing.labels = ['Entity'] + sorted(merged - {'Entity'})
 
     return [canonical_by_name[name] for name in ordered_names]
 

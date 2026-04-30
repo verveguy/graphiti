@@ -175,7 +175,8 @@ def _promote_resolved_node(
     resolved_node: EntityNode,
 ) -> EntityNode:
     """Union the labels of the extracted node into the canonical resolved node."""
-    resolved_node.labels = sorted(set(resolved_node.labels) | set(extracted_node.labels))
+    merged = set(resolved_node.labels) | set(extracted_node.labels)
+    resolved_node.labels = ['Entity'] + sorted(merged - {'Entity'})
     return resolved_node
 
 
