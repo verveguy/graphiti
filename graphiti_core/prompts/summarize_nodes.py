@@ -52,86 +52,74 @@ class Versions(TypedDict):
 
 
 def summarize_pair(context: dict[str, Any]) -> list[Message]:
+    sys_prompt = f"""You are a helpful assistant that combines summaries into a single dense factual summary.
+
+Synthesize the information from the following two summaries into a single information-dense summary.
+
+IMPORTANT:
+- Preserve all materially relevant names, roles, places, dates, counts, and changes over time that are explicitly supported.
+- Prefer compact factual sentences over vague thematic phrasing.
+- When the durable fact is the content of what was said, state the content directly instead of narrating that it was said.
+- Use communication verbs only when the act of speaking, asking, sharing, presenting, or announcing is itself the important fact.
+- Avoid filler verbs like "mentioned", "described", "stated", "reported", "noted", "discussed", "referenced", and "indicated" unless the communication act itself matters.
+- SUMMARIES MUST BE LESS THAN {MAX_SUMMARY_CHARS} CHARACTERS."""
+
+    user_prompt = f"""Summaries:
+{to_prompt_json(context['node_summaries'])}"""
+
     return [
-        Message(
-            role='system',
-            content='You are a helpful assistant that combines summaries into a single dense factual summary.',
-        ),
-        Message(
-            role='user',
-            content=f"""
-        Synthesize the information from the following two summaries into a single information-dense summary.
-
-        IMPORTANT:
-        - Preserve all materially relevant names, roles, places, dates, counts, and changes over time that are explicitly supported.
-        - Prefer compact factual sentences over vague thematic phrasing.
-        - When the durable fact is the content of what was said, state the content directly instead of narrating that it was said.
-        - Use communication verbs only when the act of speaking, asking, sharing, presenting, or announcing is itself the important fact.
-        - Avoid filler verbs like "mentioned", "described", "stated", "reported", "noted", "discussed", "referenced", and "indicated" unless the communication act itself matters.
-        - SUMMARIES MUST BE LESS THAN {MAX_SUMMARY_CHARS} CHARACTERS.
-
-        Summaries:
-        {to_prompt_json(context['node_summaries'])}
-        """,
-        ),
+        Message(role='system', content=sys_prompt),
+        Message(role='user', content=user_prompt),
     ]
 
 
 def summarize_context(context: dict[str, Any]) -> list[Message]:
+    sys_prompt = f"""You are a helpful assistant that generates detailed, information-dense summaries and attributes from provided text.
+
+Given the MESSAGES and the ENTITY name, create a summary for the ENTITY. Your summary must only use
+information from the provided MESSAGES. Your summary should also only contain information relevant to the
+provided ENTITY.
+
+In addition, extract any values for the provided entity properties based on their descriptions.
+If the value of the entity property cannot be found in the current context, set the value of the property to the Python value None.
+
+{summary_instructions}"""
+
+    user_prompt = f"""<MESSAGES>
+{to_prompt_json(context['previous_episodes'])}
+{to_prompt_json(context['episode_content'])}
+</MESSAGES>
+
+<ENTITY>
+{context['node_name']}
+</ENTITY>
+
+<ENTITY CONTEXT>
+{context['node_summary']}
+</ENTITY CONTEXT>
+
+<ATTRIBUTES>
+{to_prompt_json(context['attributes'])}
+</ATTRIBUTES>"""
+
     return [
-        Message(
-            role='system',
-            content='You are a helpful assistant that generates detailed, information-dense summaries and attributes from provided text.',
-        ),
-        Message(
-            role='user',
-            content=f"""
-        Given the MESSAGES and the ENTITY name, create a summary for the ENTITY. Your summary must only use
-        information from the provided MESSAGES. Your summary should also only contain information relevant to the
-        provided ENTITY.
-
-        In addition, extract any values for the provided entity properties based on their descriptions.
-        If the value of the entity property cannot be found in the current context, set the value of the property to the Python value None.
-
-        {summary_instructions}
-
-        <MESSAGES>
-        {to_prompt_json(context['previous_episodes'])}
-        {to_prompt_json(context['episode_content'])}
-        </MESSAGES>
-
-        <ENTITY>
-        {context['node_name']}
-        </ENTITY>
-
-        <ENTITY CONTEXT>
-        {context['node_summary']}
-        </ENTITY CONTEXT>
-
-        <ATTRIBUTES>
-        {to_prompt_json(context['attributes'])}
-        </ATTRIBUTES>
-        """,
-        ),
+        Message(role='system', content=sys_prompt),
+        Message(role='user', content=user_prompt),
     ]
 
 
 def summary_description(context: dict[str, Any]) -> list[Message]:
-    return [
-        Message(
-            role='system',
-            content='You are a helpful assistant that describes provided contents in a single sentence.',
-        ),
-        Message(
-            role='user',
-            content=f"""
-        Create a short one sentence description of the summary that explains what kind of information is summarized.
-        Summaries must be under {MAX_SUMMARY_CHARS} characters.
+    sys_prompt = f"""You are a helpful assistant that describes provided contents in a single sentence.
 
-        Summary:
-        {to_prompt_json(context['summary'])}
-        """,
-        ),
+Create a short one sentence description of the summary that explains what kind of information is summarized.
+Summaries must be under {MAX_SUMMARY_CHARS} characters."""
+
+    user_prompt = f"""Summary:
+{to_prompt_json(context['summary'])}"""
+
+    return [
+        Message(role='system', content=sys_prompt),
+        Message(role='user', content=user_prompt),
     ]
 
 
