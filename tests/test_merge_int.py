@@ -109,19 +109,6 @@ async def _get_mentions_count(driver, entity_uuid: str) -> int:
     return int(results[0]['cnt'])
 
 
-async def _get_entity_edge_endpoint_count(driver, entity_uuid: str) -> int:
-    """Count entity edges touching entity_uuid as either source or target."""
-    results, _, _ = await driver.execute_query(
-        """
-        MATCH (n:Entity {uuid: $uuid})-[e:RELATES_TO]-(m:Entity)
-        RETURN COUNT(e) AS cnt
-        """,
-        uuid=entity_uuid,
-        routing_='r',
-    )
-    return int(results[0]['cnt'])
-
-
 # ---------------------------------------------------------------------------
 # Happy path: two duplicate entities merged into survivor
 # ---------------------------------------------------------------------------
