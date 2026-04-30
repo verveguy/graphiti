@@ -1805,54 +1805,54 @@ class Graphiti:
         labels_after = list(survivor.labels)
         summary_after = survivor.summary or ''
 
-        if not dry_run:
-            # Fetch survivor's existing entity edges for collision detection
-            survivor_edges = await EntityEdge.get_by_node_uuid(self.driver, survivor_uuid)
-            survivor_edge_keys: set[tuple[str, str, str, str]] = {
-                (e.source_node_uuid, e.target_node_uuid, e.name, e.fact)
-                for e in survivor_edges
-            }
+        # Always fetch survivor's existing edges for collision/dedup detection so
+        # that dry-run mode can compute accurate counts without making any writes.
+        survivor_edges = await EntityEdge.get_by_node_uuid(self.driver, survivor_uuid)
+        survivor_edge_keys: set[tuple[str, str, str, str]] = {
+            (e.source_node_uuid, e.target_node_uuid, e.name, e.fact)
+            for e in survivor_edges
+        }
 
-            # Fetch survivor's existing MENTIONS edges for dedup detection
-            survivor_mentions = await EpisodicEdge.get_by_entity_uuid(self.driver, survivor_uuid)
-            survivor_episode_uuids: set[str] = {e.source_node_uuid for e in survivor_mentions}
+        survivor_mentions = await EpisodicEdge.get_by_entity_uuid(self.driver, survivor_uuid)
+        survivor_episode_uuids: set[str] = {e.source_node_uuid for e in survivor_mentions}
 
         for dup in validated_dups:
-            if not dry_run:
-                # --- Edge rewiring ---
-                dup_edges = await EntityEdge.get_by_node_uuid(self.driver, dup.uuid)
-                edges_to_delete: list[str] = []
-                for edge in dup_edges:
-                    new_src = survivor_uuid if edge.source_node_uuid == dup.uuid else edge.source_node_uuid
-                    new_tgt = survivor_uuid if edge.target_node_uuid == dup.uuid else edge.target_node_uuid
-                    key = (new_src, new_tgt, edge.name, edge.fact)
-                    if key in survivor_edge_keys:
-                        edges_to_delete.append(edge.uuid)
-                    else:
-                        edge.source_node_uuid = new_src
-                        edge.target_node_uuid = new_tgt
+            # --- Edge rewiring ---
+            dup_edges = await EntityEdge.get_by_node_uuid(self.driver, dup.uuid)
+            edges_to_delete: list[str] = []
+            for edge in dup_edges:
+                new_src = survivor_uuid if edge.source_node_uuid == dup.uuid else edge.source_node_uuid
+                new_tgt = survivor_uuid if edge.target_node_uuid == dup.uuid else edge.target_node_uuid
+                key = (new_src, new_tgt, edge.name, edge.fact)
+                if key in survivor_edge_keys:
+                    edges_to_delete.append(edge.uuid)
+                else:
+                    edge.source_node_uuid = new_src
+                    edge.target_node_uuid = new_tgt
+                    if not dry_run:
                         await edge.save(self.driver)
-                        survivor_edge_keys.add(key)
-                        edges_rewired += 1
-                if edges_to_delete:
-                    await Edge.delete_by_uuids(self.driver, edges_to_delete)
+                    survivor_edge_keys.add(key)
+                    edges_rewired += 1
+            if edges_to_delete and not dry_run:
+                await Edge.delete_by_uuids(self.driver, edges_to_delete)
 
-                # --- MENTIONS rewiring ---
-                dup_mentions = await EpisodicEdge.get_by_entity_uuid(self.driver, dup.uuid)
-                mentions_to_delete: list[str] = []
-                for mention in dup_mentions:
-                    episode_uuid = mention.source_node_uuid
-                    if episode_uuid in survivor_episode_uuids:
-                        mentions_to_delete.append(mention.uuid)
-                    else:
-                        mention.target_node_uuid = survivor_uuid
+            # --- MENTIONS rewiring ---
+            dup_mentions = await EpisodicEdge.get_by_entity_uuid(self.driver, dup.uuid)
+            mentions_to_delete: list[str] = []
+            for mention in dup_mentions:
+                episode_uuid = mention.source_node_uuid
+                if episode_uuid in survivor_episode_uuids:
+                    mentions_to_delete.append(mention.uuid)
+                else:
+                    mention.target_node_uuid = survivor_uuid
+                    if not dry_run:
                         await mention.save(self.driver)
-                        survivor_episode_uuids.add(episode_uuid)
-                        episodes_relinked += 1
-                if mentions_to_delete:
-                    await Edge.delete_by_uuids(self.driver, mentions_to_delete)
+                    survivor_episode_uuids.add(episode_uuid)
+                    episodes_relinked += 1
+            if mentions_to_delete and not dry_run:
+                await Edge.delete_by_uuids(self.driver, mentions_to_delete)
 
-            # --- Label union and summary merge (computed even in dry_run) ---
+            # --- Label union and summary merge ---
             labels_after = sorted(set(labels_after) | set(dup.labels))
 
             existing_lines = set(summary_after.splitlines())

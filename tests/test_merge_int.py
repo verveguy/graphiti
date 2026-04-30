@@ -245,10 +245,12 @@ async def test_merge_entities_dry_run(graph_driver, mock_embedder):
         dry_run=True,
     )
 
-    # Result shape is valid
+    # Result shape is valid with accurate counts (dry-run still computes what would change)
     assert isinstance(result, MergeEntitiesResult)
     assert result.survivor_uuid == survivor.uuid
     assert result.merged_count == 1
+    assert result.edges_rewired == 1
+    assert result.episodes_relinked == 1
     assert result.error is None
 
     # Graph is unchanged
