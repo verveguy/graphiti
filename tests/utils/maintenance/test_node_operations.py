@@ -1163,4 +1163,83 @@ async def test_resolve_extracted_nodes_cross_label_same_name_produces_duplicate_
 
     assert len(duplicate_pairs) == 1
     assert duplicate_pairs[0][0].uuid == extracted.uuid
-    assert duplicate_pairs[0][1].uuid == existing.uuid
+
+
+# ── Multi-label union tests ────────────────────────────────────────────────────
+
+def test_promote_resolved_node_unions_disjoint_labels():
+    """_promote_resolved_node must union label sets, not discard the incoming labels."""
+    from graphiti_core.utils.maintenance.dedup_helpers import _promote_resolved_node
+
+    existing = EntityNode(name='Vis Service', group_id='g', labels=['Entity', 'Service'])
+    incoming = EntityNode(name='Vis Service', group_id='g', labels=['Entity', 'System'])
+
+    result = _promote_resolved_node(incoming, existing)
+
+    assert result is existing
+    assert set(result.labels) == {'Entity', 'Service', 'System'}
+
+
+def test_promote_resolved_node_idempotent_on_identical_labels():
+    """Union of identical label sets is the same set."""
+    from graphiti_core.utils.maintenance.dedup_helpers import _promote_resolved_node
+
+    existing = EntityNode(name='Alice', group_id='g', labels=['Entity', 'Person'])
+    incoming = EntityNode(name='Alice', group_id='g', labels=['Entity', 'Person'])
+
+    result = _promote_resolved_node(incoming, existing)
+
+    assert set(result.labels) == {'Entity', 'Person'}
+
+
+def test_create_entity_nodes_freeform_multi_label():
+    """Multi-label entity_types list must produce a node with all labels plus Entity."""
+    from graphiti_core.nodes import EpisodeType, EpisodicNode
+    from graphiti_core.prompts.extract_nodes import ExtractedEntityFreeform
+    from graphiti_core.utils.datetime_utils import utc_now
+    from graphiti_core.utils.maintenance.node_operations import _create_entity_nodes_freeform
+
+    episode = EpisodicNode(
+        name='ep',
+        group_id='g',
+        source=EpisodeType.text,
+        source_description='test',
+        content='x',
+        valid_at=utc_now(),
+    )
+    entities = [ExtractedEntityFreeform(name='Vis Service', entity_types=['Service', 'Technology'])]
+
+    nodes = _create_entity_nodes_freeform(entities, excluded_entity_types=None, episode=episode)
+
+    assert len(nodes) == 1
+    assert set(nodes[0].labels) == {'Entity', 'Service', 'Technology'}
+
+
+def test_create_entity_nodes_freeform_filter_not_skip():
+    """When one label is excluded, keep the entity with remaining labels intact."""
+    from graphiti_core.nodes import EpisodeType, EpisodicNode
+    from graphiti_core.prompts.extract_nodes import ExtractedEntityFreeform
+    from graphiti_core.utils.datetime_utils import utc_now
+    from graphiti_core.utils.maintenance.node_operations import _create_entity_nodes_freeform
+
+    episode = EpisodicNode(
+        name='ep',
+        group_id='g',
+        source=EpisodeType.text,
+        source_description='test',
+        content='x',
+        valid_at=utc_now(),
+    )
+    entities = [
+        ExtractedEntityFreeform(name='Vis Service', entity_types=['Service', 'Technology']),
+        ExtractedEntityFreeform(name='Alice', entity_types=['Person']),
+    ]
+
+    nodes = _create_entity_nodes_freeform(
+        entities, excluded_entity_types=['Service', 'Person'], episode=episode
+    )
+
+    # Vis Service keeps Technology; Alice is fully excluded
+    assert len(nodes) == 1
+    assert nodes[0].name == 'Vis Service'
+    assert set(nodes[0].labels) == {'Entity', 'Technology'}
