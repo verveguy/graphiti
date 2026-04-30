@@ -301,6 +301,79 @@ You can use Docker Compose to quickly start the required services:
 
   This will start the FalkorDB Docker service and related components.
 
+## Cleaning up duplicate entities
+
+Over time — especially after a bug fix or schema change — a graph can accumulate duplicate entity nodes
+representing the same real-world entity under slightly different names or labels. Graphiti provides
+`merge_entities` to collapse these duplicates without re-ingesting the source corpus.
+
+### Core API
+
+```python
+from graphiti_core import Graphiti
+from graphiti_core.graphiti import MergeRequest
+
+graphiti = Graphiti(graph_driver=driver)
+
+# Merge one duplicate into a survivor
+result = await graphiti.merge_entities(
+    survivor_uuid='uuid-of-canonical-entity',
+    duplicate_uuids=['uuid-of-dup-1', 'uuid-of-dup-2'],
+)
+print(f'Merged {result.merged_count} node(s)')
+print(f'Rewired {result.edges_rewired} edges, relinked {result.episodes_relinked} episodes')
+print(f'Labels after merge: {result.labels_after}')
+```
+
+Use `dry_run=True` to preview changes without writing to the graph:
+
+```python
+preview = await graphiti.merge_entities(
+    survivor_uuid='uuid-of-canonical-entity',
+    duplicate_uuids=['uuid-of-dup'],
+    dry_run=True,
+)
+# preview has the same shape as a real result — no writes were made
+```
+
+For bulk cleanup, use the batch variant:
+
+```python
+merges = [
+    MergeRequest(survivor_uuid='canonical-a', duplicate_uuids=['dup-a1', 'dup-a2']),
+    MergeRequest(survivor_uuid='canonical-b', duplicate_uuids=['dup-b1']),
+]
+results = await graphiti.merge_entities_batch(merges=merges, dry_run=False)
+for r in results:
+    if r.error:
+        print(f'  {r.survivor_uuid}: FAILED — {r.error}')
+    else:
+        print(f'  {r.survivor_uuid}: merged {r.merged_count} dup(s)')
+```
+
+### MCP tools
+
+The MCP server exposes two write tools for AI assistant workflows:
+
+- `knowledge_merge_entities(survivor_uuid, duplicate_uuids, dry_run=False)` — single merge
+- `knowledge_merge_entities_batch(merges, dry_run=False)` — batch merge
+
+Both tools respect `dry_run` for safe previewing before committing changes.
+
+### Merge semantics
+
+| Field | Behavior |
+|-------|----------|
+| `uuid`, `name`, `group_id`, `created_at`, `attributes` | Kept from survivor — never changed |
+| `labels` | Union: `sorted(set(survivor.labels) \| set(dup.labels))` |
+| `summary` | Survivor lines kept; unique dup lines appended |
+| `name_embedding` | Kept from survivor — no recomputation |
+| EntityEdge endpoints | Rewired from dup → survivor; collisions deduplicated |
+| Episodic `MENTIONS` edges | Redirected from dup → survivor; duplicates removed |
+
+> **Note:** A `suggest_duplicates → human review → merge_entities` end-to-end example will be added
+> in a future release once `suggest_duplicates` is implemented.
+
 ## MCP Server
 
 The `mcp_server` directory contains a Model Context Protocol (MCP) server implementation for Graphiti. This server
