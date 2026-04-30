@@ -14,9 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import asyncio
 import logging
 from datetime import datetime
 from time import time
+from typing import Any
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -58,6 +60,7 @@ from graphiti_core.nodes import (
     create_entity_node_embeddings,
 )
 from graphiti_core.prompts.lib import prompt_library
+from graphiti_core.prompts.models import Message
 from graphiti_core.prompts.summarize_sagas import SagaSummary
 from graphiti_core.search.search import SearchConfig, search
 from graphiti_core.search.search_config import DEFAULT_SEARCH_LIMIT, SearchResults
@@ -731,6 +734,106 @@ class Graphiti:
 
         return episodic_edges, episode
 
+    async def _warmup_prompt_cache(
+        self,
+        episodes: list[EpisodicNode],
+        entity_types: dict[str, type[BaseModel]] | None,
+        edge_types: dict[str, type[BaseModel]] | None,
+        custom_extraction_instructions: str | None,
+    ) -> None:
+        """Fire one max_tokens=1 call per distinct prompt type before the bulk fan-out.
+
+        Seeds the Anthropic server-side prompt cache so that the subsequent concurrent
+        requests all hit the warm cache rather than all paying the cache-write surcharge.
+        The base LLMClient.warmup is a no-op, so this call is free for non-Anthropic
+        providers and for AnthropicClient when cache_mode != 'system-block'.
+        """
+        if not episodes:
+            return
+
+        use_freeform = entity_types is None
+
+        # Build entity_types_context matching what real extraction calls produce.
+        entity_types_context: list[dict[str, Any]] = [
+            {
+                'entity_type_id': 0,
+                'entity_type_name': 'Entity',
+                'entity_type_description': (
+                    'A specific, identifiable entity that does not fit any of the other listed '
+                    'types. Must still be a concrete, meaningful thing — specific enough to be '
+                    'uniquely identifiable.'
+                ),
+            }
+        ]
+        if entity_types is not None:
+            entity_types_context += [
+                {
+                    'entity_type_id': i + 1,
+                    'entity_type_name': type_name,
+                    'entity_type_description': type_model.__doc__,
+                }
+                for i, (type_name, type_model) in enumerate(entity_types.items())
+            ]
+
+        # Build edge_types_context matching what real edge extraction calls produce.
+        edge_types_context: list[dict[str, Any]] = (
+            [
+                {
+                    'fact_type_name': type_name,
+                    'fact_type_signatures': [('Entity', 'Entity')],
+                    'fact_type_description': type_model.__doc__,
+                }
+                for type_name, type_model in edge_types.items()
+            ]
+            if edge_types is not None
+            else []
+        )
+
+        base_context: dict[str, Any] = {
+            'episode_content': '',
+            'episode_timestamp': '',
+            'previous_episodes': [],
+            'custom_extraction_instructions': '',
+            'entity_types': entity_types_context,
+            'source_description': '',
+            'freeform_entity_types': use_freeform,
+            'extracted_nodes': [],
+            'existing_nodes': [],
+            'nodes': [],
+            'reference_time': '',
+            'edge_types': edge_types_context,
+            'node': '',
+        }
+
+        message_sets: list[list[Message]] = []
+
+        # extract_nodes: one warmup per distinct EpisodeType in this batch
+        for source in {ep.source for ep in episodes}:
+            if source == EpisodeType.message:
+                msgs = prompt_library.extract_nodes.extract_message(base_context)
+            elif source == EpisodeType.json:
+                msgs = prompt_library.extract_nodes.extract_json(base_context)
+            else:
+                msgs = prompt_library.extract_nodes.extract_text(base_context)
+            message_sets.append([msgs[0], Message(role='user', content='.')])
+
+        # extract_edges
+        msgs = prompt_library.extract_edges.edge(base_context)
+        message_sets.append([msgs[0], Message(role='user', content='.')])
+
+        # dedupe_nodes
+        msgs = prompt_library.dedupe_nodes.nodes(base_context)
+        message_sets.append([msgs[0], Message(role='user', content='.')])
+
+        # extract_attributes
+        msgs = prompt_library.extract_nodes.extract_attributes(base_context)
+        message_sets.append([msgs[0], Message(role='user', content='.')])
+
+        await asyncio.gather(
+            *[self.llm_client.warmup(msg_set) for msg_set in message_sets],
+            return_exceptions=True,
+        )
+
     async def _extract_and_dedupe_nodes_bulk(
         self,
         episode_context: list[tuple[EpisodicNode, list[EpisodicNode]]],
@@ -1300,6 +1403,11 @@ class Graphiti:
 
                     # Get previous episode context for each episode
                     episode_context = await retrieve_previous_episodes_bulk(self.driver, episodes)
+
+                    # Seed the Anthropic prompt cache before the concurrent fan-out
+                    await self._warmup_prompt_cache(
+                        episodes, entity_types, edge_types, custom_extraction_instructions
+                    )
 
                     # Extract and dedupe nodes and edges
                     (
