@@ -285,18 +285,19 @@ def _create_entity_nodes_freeform(
 
     for extracted_entity in extracted_entities:
         sanitized = [_sanitize_label(t) for t in extracted_entity.entity_types]
+        initial_specific = [t for t in sanitized if t != 'Entity']
 
         # Filter-not-skip: remove excluded labels, keep entity if any specific labels remain
         if excluded_entity_types:
             sanitized = [t for t in sanitized if t not in excluded_entity_types]
 
         specific_labels = [t for t in sanitized if t != 'Entity']
-        if not specific_labels and excluded_entity_types:
-            # All specific labels were excluded; only generic fallback remains — skip
+        if initial_specific and not specific_labels:
+            # All specific labels were excluded; skip the entity entirely
             logger.debug(f'Excluding entity "{extracted_entity.name}": all labels excluded')
             continue
 
-        labels: list[str] = sorted(set(['Entity'] + (specific_labels if specific_labels else [])))
+        labels: list[str] = sorted(set(['Entity'] + specific_labels))
 
         new_node = EntityNode(
             name=extracted_entity.name,
