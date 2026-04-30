@@ -69,15 +69,7 @@ def resolve_edge(context: dict[str, Any]) -> list[Message]:
         ),
         Message(
             role='user',
-            content=f"""
-NEVER mark facts as duplicates if they have key differences, particularly around numeric values, dates, or key qualifiers.
-
-IMPORTANT constraints:
-- duplicate_facts: ONLY idx values from EXISTING FACTS (NEVER include FACT INVALIDATION CANDIDATES)
-- contradicted_facts: idx values from EITHER list (EXISTING FACTS or FACT INVALIDATION CANDIDATES)
-- The idx values are continuous across both lists (INVALIDATION CANDIDATES start where EXISTING FACTS end)
-
-<EXISTING FACTS>
+            content=f"""<EXISTING FACTS>
 {context['existing_edges']}
 </EXISTING FACTS>
 
@@ -88,6 +80,13 @@ IMPORTANT constraints:
 <NEW FACT>
 {context['new_edge']}
 </NEW FACT>
+
+NEVER mark facts as duplicates if they have key differences, particularly around numeric values, dates, or key qualifiers.
+
+IMPORTANT constraints:
+- duplicate_facts: ONLY idx values from EXISTING FACTS (NEVER include FACT INVALIDATION CANDIDATES)
+- contradicted_facts: idx values from EITHER list (EXISTING FACTS or FACT INVALIDATION CANDIDATES)
+- The idx values are continuous across both lists (INVALIDATION CANDIDATES start where EXISTING FACTS end)
 
 You will receive TWO lists of facts with CONTINUOUS idx numbering across both lists.
 EXISTING FACTS are indexed first, followed by FACT INVALIDATION CANDIDATES.
@@ -128,9 +127,7 @@ def _format_batch_edges_for_prompt(edges: list[dict[str, Any]]) -> str:
         if edge['candidates']:
             parts.append('  EXISTING CANDIDATES:')
             for candidate in edge['candidates']:
-                parts.append(
-                    f'    candidate_idx={candidate["candidate_idx"]}: {candidate["fact"]}'
-                )
+                parts.append(f'    candidate_idx={candidate["candidate_idx"]}: {candidate["fact"]}')
         else:
             parts.append('  EXISTING CANDIDATES: (none)')
         parts.append('</EDGE>')
@@ -148,13 +145,12 @@ def resolve_edges_batch(context: dict[str, Any]) -> list[Message]:
         ),
         Message(
             role='user',
-            content=f"""
+            content=f"""{_format_batch_edges_for_prompt(edges)}
+
 NEVER mark facts as duplicates if they have key differences, particularly around numeric values, dates, or key qualifiers.
 
 For each NEW FACT below, determine if it is a duplicate of any EXISTING CANDIDATE listed under that fact.
 Each new fact has its own candidate list — do NOT compare candidates across different new facts.
-
-{_format_batch_edges_for_prompt(edges)}
 
 For each new fact (identified by edge_idx), return:
 - edge_idx: the index of the new fact (as provided above)
