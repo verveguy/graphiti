@@ -174,21 +174,8 @@ def _promote_resolved_node(
     extracted_node: EntityNode,
     resolved_node: EntityNode,
 ) -> EntityNode:
-    """Upgrade a generic canonical node when a duplicate carries a specific type."""
-    resolved_specific_labels = [label for label in resolved_node.labels if label != 'Entity']
-    if resolved_specific_labels:
-        return resolved_node
-
-    extracted_specific_labels = [label for label in extracted_node.labels if label != 'Entity']
-    if not extracted_specific_labels:
-        return resolved_node
-
-    promoted_labels: list[str] = []
-    for label in ['Entity', *resolved_node.labels, *extracted_specific_labels]:
-        if label not in promoted_labels:
-            promoted_labels.append(label)
-
-    resolved_node.labels = promoted_labels
+    """Union the labels of the extracted node into the canonical resolved node."""
+    resolved_node.labels = sorted(set(resolved_node.labels) | set(extracted_node.labels))
     return resolved_node
 
 

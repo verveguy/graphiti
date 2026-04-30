@@ -284,14 +284,19 @@ def _create_entity_nodes_freeform(
     extracted_nodes = []
 
     for extracted_entity in extracted_entities:
-        entity_type_name = _sanitize_label(extracted_entity.entity_type)
+        sanitized = [_sanitize_label(t) for t in extracted_entity.entity_types]
 
-        # Check if this entity type should be excluded
-        if excluded_entity_types and entity_type_name in excluded_entity_types:
-            logger.debug(f'Excluding entity of type "{entity_type_name}"')
+        # Filter-not-skip: remove excluded labels, keep entity if any specific labels remain
+        if excluded_entity_types:
+            sanitized = [t for t in sanitized if t not in excluded_entity_types]
+
+        specific_labels = [t for t in sanitized if t != 'Entity']
+        if not specific_labels and excluded_entity_types:
+            # All specific labels were excluded; only generic fallback remains — skip
+            logger.debug(f'Excluding entity "{extracted_entity.name}": all labels excluded')
             continue
 
-        labels: list[str] = list({'Entity', entity_type_name})
+        labels: list[str] = sorted(set(['Entity'] + (specific_labels if specific_labels else [])))
 
         new_node = EntityNode(
             name=extracted_entity.name,
@@ -301,7 +306,7 @@ def _create_entity_nodes_freeform(
             created_at=utc_now(),
         )
         extracted_nodes.append(new_node)
-        logger.debug(f'Created new node: {new_node.uuid} (type: {entity_type_name})')
+        logger.debug(f'Created new node: {new_node.uuid} (types: {specific_labels})')
 
     return extracted_nodes
 
@@ -309,12 +314,7 @@ def _create_entity_nodes_freeform(
 def _collapse_exact_duplicate_extracted_nodes(
     extracted_nodes: list[EntityNode],
 ) -> list[EntityNode]:
-    """Collapse same-message duplicates with the same normalized name.
-
-    This is intentionally narrow: it only merges exact normalized-name duplicates that the
-    extraction prompt should already have emitted once. When duplicates disagree on specificity,
-    keep the more specific node (for example, `Person` over bare `Entity`).
-    """
+    """Collapse same-message duplicates with the same normalized name, unioning their labels."""
     if len(extracted_nodes) < 2:
         return extracted_nodes
 
@@ -329,13 +329,7 @@ def _collapse_exact_duplicate_extracted_nodes(
             ordered_names.append(normalized_name)
             continue
 
-        existing_specific_labels = {label for label in existing.labels if label != 'Entity'}
-        node_specific_labels = {label for label in node.labels if label != 'Entity'}
-        if len(node_specific_labels) > len(existing_specific_labels) or (
-            len(node_specific_labels) == len(existing_specific_labels)
-            and len(node.name.strip()) > len(existing.name.strip())
-        ):
-            canonical_by_name[normalized_name] = node
+        existing.labels = sorted(set(existing.labels) | set(node.labels))
 
     return [canonical_by_name[name] for name in ordered_names]
 

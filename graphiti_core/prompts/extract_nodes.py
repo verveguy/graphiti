@@ -33,14 +33,38 @@ class ExtractedEntity(BaseModel):
     )
 
 
+_FREEFORM_ENTITY_ONTOLOGY: list[tuple[str, str]] = [
+    ('Person', 'An individual human being'),
+    ('Organization', 'A company, institution, group, or governing body'),
+    ('Software', 'A software application, library, or framework'),
+    ('Service', 'A deployed service, platform, or SaaS product'),
+    ('System', 'An integrated technical system or infrastructure component'),
+    ('Technology', 'A protocol, standard, methodology, or technical approach'),
+    ('Concept', 'An abstract idea, principle, or theoretical framework'),
+    ('Location', 'A physical or virtual place, region, or address'),
+    ('Event', 'A dated or scheduled occurrence or incident'),
+    ('Process', 'A workflow, procedure, or repeatable operation'),
+    ('Requirement', 'A constraint, specification, or policy requirement'),
+    ('Document', 'A document, report, specification, or publication'),
+    ('Product', 'A physical or digital product or deliverable'),
+    ('Project', 'A project, initiative, or program'),
+    ('Award', 'A prize, honor, or recognition'),
+    ('Book', 'A book, novel, or long-form publication'),
+]
+
+_FREEFORM_ONTOLOGY_TEXT = '\n'.join(
+    f'   - {label}: {desc}' for label, desc in _FREEFORM_ENTITY_ONTOLOGY
+)
+
+
 class ExtractedEntityFreeform(BaseModel):
     name: str = Field(..., description='Name of the extracted entity')
-    entity_type: str = Field(
-        description='The ontological type that best describes this entity. '
-        'Use a concise, capitalized, single-word label. '
-        'You are free to use any type that fits — common examples include '
-        'Person, Organization, Software, Concept, Location, Event, Award, '
-        'Book, Technology, but use whatever label best captures the entity.',
+    entity_types: list[str] = Field(
+        description='One or more ontological labels that describe this entity. '
+        'Choose from the closed ontology list provided in the instructions. '
+        'Most entities have a single label; use multiple only when an entity '
+        'genuinely belongs to more than one category (e.g., a software library '
+        'that is also a service).',
     )
 
 
@@ -105,10 +129,11 @@ class Versions(TypedDict):
 def _entity_type_classification_instructions(context: dict[str, Any]) -> str:
     """Generate entity classification instructions based on whether custom types are provided."""
     if context.get('freeform_entity_types'):
-        return """3. **Entity Classification**:
-   - Assign an `entity_type` label that best describes each entity's ontological category.
-   - Use any type that fits — you are not limited to a fixed set. Choose the most descriptive and specific label.
-   - Use concise, capitalized, single-word labels (e.g., Person, Book, Award, Technology, Methodology)."""
+        return f"""3. **Entity Classification**:
+   - Assign one or more `entity_types` labels from the closed ontology below.
+   - Most entities have a single label; use multiple only when the entity genuinely spans categories.
+   - Choose only from this list:
+{_FREEFORM_ONTOLOGY_TEXT}"""
     else:
         return """3. **Entity Classification**:
    - Use the descriptions in ENTITY TYPES to classify each extracted entity.
@@ -119,9 +144,9 @@ def _classification_instruction_inline(context: dict[str, Any]) -> str:
     """Generate inline classification instruction for extract_json and extract_text prompts."""
     if context.get('freeform_entity_types'):
         return (
-            'For each entity extracted, assign an `entity_type` label that best describes its '
-            'ontological category. Use any type that fits — you are not limited to a fixed set. '
-            'Use concise, capitalized, single-word labels.'
+            'For each entity extracted, assign one or more `entity_types` labels from this closed ontology:\n'
+            f'{_FREEFORM_ONTOLOGY_TEXT}\n'
+            'Most entities have a single label; use multiple only when the entity genuinely spans categories.'
         )
     return (
         'For each entity extracted, also determine its entity type based on the provided ENTITY TYPES '

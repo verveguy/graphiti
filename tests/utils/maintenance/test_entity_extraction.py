@@ -81,8 +81,8 @@ class TestExtractNodesSmallInput:
         # Mock LLM response (freeform mode — no entity_types provided)
         llm_generate.return_value = {
             'extracted_entities': [
-                {'name': 'Alice', 'entity_type': 'Person'},
-                {'name': 'Bob', 'entity_type': 'Person'},
+                {'name': 'Alice', 'entity_types': ['Person']},
+                {'name': 'Bob', 'entity_types': ['Person']},
             ]
         }
 
@@ -183,9 +183,9 @@ class TestExtractNodesSmallInput:
         # Freeform mode (no entity_types provided)
         llm_generate.return_value = {
             'extracted_entities': [
-                {'name': 'Alice', 'entity_type': 'Person'},
-                {'name': '', 'entity_type': 'Person'},
-                {'name': '   ', 'entity_type': 'Concept'},
+                {'name': 'Alice', 'entity_types': ['Person']},
+                {'name': '', 'entity_types': ['Person']},
+                {'name': '   ', 'entity_types': ['Concept']},
             ]
         }
 
@@ -660,9 +660,9 @@ class TestFreeformEntityExtraction:
 
         llm_generate.return_value = {
             'extracted_entities': [
-                {'name': 'Alice', 'entity_type': 'Person'},
-                {'name': 'Acme Corp', 'entity_type': 'Organization'},
-                {'name': 'Python', 'entity_type': 'Software'},
+                {'name': 'Alice', 'entity_types': ['Person']},
+                {'name': 'Acme Corp', 'entity_types': ['Organization']},
+                {'name': 'Python', 'entity_types': ['Software']},
             ]
         }
 
@@ -688,8 +688,8 @@ class TestFreeformEntityExtraction:
 
         llm_generate.return_value = {
             'extracted_entities': [
-                {'name': 'Alice', 'entity_type': 'Person'},
-                {'name': 'Python', 'entity_type': 'Software'},
+                {'name': 'Alice', 'entity_types': ['Person']},
+                {'name': 'Python', 'entity_types': ['Software']},
             ]
         }
 
@@ -712,8 +712,8 @@ class TestFreeformEntityExtraction:
 
         llm_generate.return_value = {
             'extracted_entities': [
-                {'name': 'Alice', 'entity_type': ''},
-                {'name': 'Bob', 'entity_type': '   '},
+                {'name': 'Alice', 'entity_types': ['']},
+                {'name': 'Bob', 'entity_types': ['   ']},
             ]
         }
 
