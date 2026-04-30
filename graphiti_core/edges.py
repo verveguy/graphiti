@@ -260,6 +260,23 @@ class EpisodicEdge(Edge):
             raise GroupsEdgesNotFoundError(group_ids)
         return edges
 
+    @classmethod
+    async def get_by_entity_uuid(cls, driver: GraphDriver, entity_uuid: str):
+        if driver.episodic_edge_ops is not None:
+            return await driver.episodic_edge_ops.get_by_entity_uuid(driver, entity_uuid)
+
+        records, _, _ = await driver.execute_query(
+            """
+            MATCH (n:Episodic)-[e:MENTIONS]->(m:Entity {uuid: $entity_uuid})
+            RETURN
+            """
+            + EPISODIC_EDGE_RETURN,
+            entity_uuid=entity_uuid,
+            routing_='r',
+        )
+
+        return [get_episodic_edge_from_record(record) for record in records]
+
 
 class EntityEdge(Edge):
     name: str = Field(description='name of the edge, relation name')

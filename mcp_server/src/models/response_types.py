@@ -41,3 +41,14 @@ class EpisodeSearchResponse(TypedDict):
 class StatusResponse(TypedDict):
     status: str
     message: str
+
+
+class MergeEntitiesResponse(TypedDict):
+    message: str
+    survivor_uuid: str
+    merged_count: int
+    edges_rewired: int
+    episodes_relinked: int
+    labels_after: list[str]
+    summary_after: str
+    error: str | None

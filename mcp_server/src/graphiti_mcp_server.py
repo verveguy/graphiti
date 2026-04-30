@@ -14,6 +14,7 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from graphiti_core import Graphiti
 from graphiti_core.edges import EntityEdge
+from graphiti_core.graphiti import MergeRequest
 from graphiti_core.nodes import EpisodeType, EpisodicNode
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
@@ -26,6 +27,7 @@ from models.response_types import (
     EpisodeSearchResponse,
     ErrorResponse,
     FactSearchResponse,
+    MergeEntitiesResponse,
     NodeResult,
     NodeSearchResponse,
     StatusResponse,
@@ -751,6 +753,103 @@ async def get_status() -> StatusResponse:
             status='error',
             message=f'Graphiti MCP server is running but database connection failed: {error_msg}',
         )
+
+
+@mcp.tool()
+async def knowledge_merge_entities(
+    survivor_uuid: str,
+    duplicate_uuids: list[str],
+    dry_run: bool = False,
+) -> MergeEntitiesResponse | ErrorResponse:
+    """Merge duplicate entity nodes into a single survivor node.
+
+    Rewires all EntityEdge endpoints and episodic MENTIONS edges from each
+    duplicate UUID to the survivor, unions their labels, deduplicates summary
+    lines, then deletes each duplicate node.
+
+    Use dry_run=True to preview what would change without making any writes.
+    The returned MergeEntitiesResponse is identical in shape whether dry_run
+    is True or False, but no graph modifications are committed in dry-run mode.
+
+    Args:
+        survivor_uuid: UUID of the entity node that survives the merge.
+        duplicate_uuids: UUIDs of entity nodes to collapse into the survivor.
+        dry_run: If True, compute and return the result but make no writes.
+    """
+    global graphiti_service
+
+    if graphiti_service is None:
+        return ErrorResponse(error='Graphiti service not initialized')
+
+    try:
+        client = await graphiti_service.get_client()
+        result = await client.merge_entities(
+            survivor_uuid=survivor_uuid,
+            duplicate_uuids=duplicate_uuids,
+            dry_run=dry_run,
+        )
+        prefix = '[DRY RUN] ' if dry_run else ''
+        return MergeEntitiesResponse(
+            message=f'{prefix}Merged {result.merged_count} duplicate(s) into {survivor_uuid}',
+            survivor_uuid=result.survivor_uuid,
+            merged_count=result.merged_count,
+            edges_rewired=result.edges_rewired,
+            episodes_relinked=result.episodes_relinked,
+            labels_after=result.labels_after,
+            summary_after=result.summary_after,
+            error=result.error,
+        )
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f'Error merging entities: {error_msg}')
+        return ErrorResponse(error=f'Error merging entities: {error_msg}')
+
+
+@mcp.tool()
+async def knowledge_merge_entities_batch(
+    merges: list[MergeRequest],
+    dry_run: bool = False,
+) -> list[MergeEntitiesResponse] | ErrorResponse:
+    """Merge multiple sets of duplicate entity nodes in sequence.
+
+    Each entry in merges is processed independently. If one merge fails the
+    others still proceed; the failed entry returns a result with error set and
+    merged_count=0.
+
+    Use dry_run=True to preview all merges without making any writes.
+
+    Args:
+        merges: List of objects, each with survivor_uuid and duplicate_uuids.
+        dry_run: If True, compute and return results but make no writes.
+    """
+    global graphiti_service
+
+    if graphiti_service is None:
+        return ErrorResponse(error='Graphiti service not initialized')
+
+    try:
+        client = await graphiti_service.get_client()
+        results = await client.merge_entities_batch(merges=merges, dry_run=dry_run)
+        prefix = '[DRY RUN] ' if dry_run else ''
+        return [
+            MergeEntitiesResponse(
+                message=f'{prefix}Merged {r.merged_count} duplicate(s) into {r.survivor_uuid}'
+                if r.error is None
+                else f'Failed: {r.error}',
+                survivor_uuid=r.survivor_uuid,
+                merged_count=r.merged_count,
+                edges_rewired=r.edges_rewired,
+                episodes_relinked=r.episodes_relinked,
+                labels_after=r.labels_after,
+                summary_after=r.summary_after,
+                error=r.error,
+            )
+            for r in results
+        ]
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f'Error in batch merge: {error_msg}')
+        return ErrorResponse(error=f'Error in batch merge: {error_msg}')
 
 
 @mcp.custom_route('/health', methods=['GET'])
