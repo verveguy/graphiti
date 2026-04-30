@@ -91,8 +91,8 @@ semantics applied at dedup time.
 An additional LLM call to select a canonical label at merge time adds latency and non-determinism,
 and discards valid signal that was deliberately extracted from chunk context. Union semantics are
 already implemented in the `merge_entities` edge-resolution path (`graphiti.py:1747–1749`); this
-decision makes dedup consistent with that path. The `labels[0]` backward-compat convention
-(always `'Entity'` after sorting) means no dashboard or API consumer breaks.
+decision makes dedup consistent with that path. The `'Entity'` label is always present in the
+sorted list, so no dashboard or API consumer that checks for membership loses access to it.
 
 ### Why `sorted()` instead of insertion-order deduplication?
 
@@ -105,7 +105,7 @@ uses `sorted()` consistently.
 - **Positive:** Stable, bounded label namespace; multi-label entities receive all valid labels
   at extraction time; dedup merge no longer silently discards labels; downstream consumers can
   filter by label reliably.
-- **Positive:** `labels[0]` remains `'Entity'` after sorting, preserving backward compatibility.
+- **Positive:** `'Entity'` is always present in the sorted labels list; label order is deterministic and stable in tests and logs.
 - **Neutral:** Existing nodes in the graph retain their pre-migration labels. They will acquire
   additional labels only when they are touched by a new dedup merge.
 - **Negative:** The ontology is embedded in the prompt — expanding it requires updating the

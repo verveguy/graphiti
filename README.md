@@ -395,8 +395,10 @@ label set is updated to the **union** of both sets. No labels are discarded. Thi
 first seen as a `Service` and later extracted as a `System` will carry `['Entity', 'Service', 'System']`
 after merging.
 
-**Backward compatibility:** `labels[0]` is always `'Entity'` after sorting. Existing code that reads
-`node.labels[0]` as a primary-label fallback continues to work.
+**Backward compatibility:** The `'Entity'` label is always present in the list. Labels are stored in
+sorted order, so `labels[0]` gives the alphabetically first label (which is `'Entity'` for most of
+the ontology, but labels such as `Award`, `Book`, `Concept`, and `Document` sort before it).
+Existing code that reads `labels[0]` as a primary-label fallback continues to receive a meaningful label.
 
 ### Merge semantics
 
