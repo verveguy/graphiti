@@ -568,7 +568,8 @@ class EntityEdge(Edge):
         """
         if driver.provider == GraphProvider.LADYBUG:
             match_query = """
-                MATCH (n:Entity {uuid: $node_uuid})-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m:Entity)
+                MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m:Entity)
+                WHERE n.uuid = $node_uuid OR m.uuid = $node_uuid
             """
 
         records, _, _ = await driver.execute_query(
