@@ -134,6 +134,21 @@ class AddTripletResults(BaseModel):
     edges: list[EntityEdge]
 
 
+class MergeEntitiesResult(BaseModel):
+    survivor_uuid: str
+    merged_count: int
+    edges_rewired: int
+    episodes_relinked: int
+    labels_after: list[str]
+    summary_after: str
+    error: str | None = None
+
+
+class MergeRequest(BaseModel):
+    survivor_uuid: str
+    duplicate_uuids: list[str]
+
+
 class Graphiti:
     def __init__(
         self,
@@ -1732,3 +1747,173 @@ class Graphiti:
         from graphiti_core.search.search_utils import invalidate_embedding_cache
 
         invalidate_embedding_cache('all')
+
+    async def merge_entities(
+        self,
+        survivor_uuid: str,
+        duplicate_uuids: list[str],
+        dry_run: bool = False,
+    ) -> MergeEntitiesResult:
+        """Merge duplicate entity nodes into a single survivor node.
+
+        Rewires all EntityEdge endpoints and Episodic MENTIONS edges from each
+        duplicate to the survivor, unions labels, deduplicates summary lines, then
+        deletes each duplicate node.
+
+        This operation is best-effort atomic: on Neo4j each step runs in its own
+        auto-committed transaction. On FalkorDB, LadybugDB, and Neptune there is no
+        real transaction support — a failure mid-merge will leave the graph in a
+        partially-merged state.
+
+        Args:
+            survivor_uuid: UUID of the entity node that survives the merge.
+            duplicate_uuids: UUIDs of entity nodes to collapse into the survivor.
+            dry_run: If True, compute and return the result but make no writes.
+
+        Returns:
+            MergeEntitiesResult describing what was (or would be) changed.
+
+        Raises:
+            NodeNotFoundError: If the survivor UUID is not found.
+            ValueError: If survivor_uuid appears in duplicate_uuids, or if any
+                duplicate has a different group_id than the survivor.
+        """
+        survivor = await EntityNode.get_by_uuid(self.driver, survivor_uuid)
+
+        if survivor_uuid in duplicate_uuids:
+            raise ValueError(f'survivor_uuid {survivor_uuid!r} must not appear in duplicate_uuids')
+
+        # Fetch and validate all duplicates before any writes
+        validated_dups: list[EntityNode] = []
+        for dup_uuid in duplicate_uuids:
+            try:
+                dup = await EntityNode.get_by_uuid(self.driver, dup_uuid)
+            except NodeNotFoundError:
+                logger.warning(f'merge_entities: duplicate UUID {dup_uuid!r} not found; skipping')
+                continue
+            if dup.group_id != survivor.group_id:
+                raise ValueError(
+                    f'duplicate {dup_uuid!r} has group_id {dup.group_id!r} which differs '
+                    f"from survivor's group_id {survivor.group_id!r}; cross-partition merges "
+                    'are not supported'
+                )
+            validated_dups.append(dup)
+
+        merged_count = 0
+        edges_rewired = 0
+        episodes_relinked = 0
+        labels_after = list(survivor.labels)
+        summary_after = survivor.summary or ''
+
+        if not dry_run:
+            # Fetch survivor's existing entity edges for collision detection
+            survivor_edges = await EntityEdge.get_by_node_uuid(self.driver, survivor_uuid)
+            survivor_edge_keys: set[tuple[str, str, str, str]] = {
+                (e.source_node_uuid, e.target_node_uuid, e.name, e.fact)
+                for e in survivor_edges
+            }
+
+            # Fetch survivor's existing MENTIONS edges for dedup detection
+            survivor_mentions = await EpisodicEdge.get_by_entity_uuid(self.driver, survivor_uuid)
+            survivor_episode_uuids: set[str] = {e.source_node_uuid for e in survivor_mentions}
+
+        for dup in validated_dups:
+            if not dry_run:
+                # --- Edge rewiring ---
+                dup_edges = await EntityEdge.get_by_node_uuid(self.driver, dup.uuid)
+                edges_to_delete: list[str] = []
+                for edge in dup_edges:
+                    new_src = survivor_uuid if edge.source_node_uuid == dup.uuid else edge.source_node_uuid
+                    new_tgt = survivor_uuid if edge.target_node_uuid == dup.uuid else edge.target_node_uuid
+                    key = (new_src, new_tgt, edge.name, edge.fact)
+                    if key in survivor_edge_keys:
+                        edges_to_delete.append(edge.uuid)
+                    else:
+                        edge.source_node_uuid = new_src
+                        edge.target_node_uuid = new_tgt
+                        await edge.save(self.driver)
+                        survivor_edge_keys.add(key)
+                        edges_rewired += 1
+                if edges_to_delete:
+                    await Edge.delete_by_uuids(self.driver, edges_to_delete)
+
+                # --- MENTIONS rewiring ---
+                dup_mentions = await EpisodicEdge.get_by_entity_uuid(self.driver, dup.uuid)
+                mentions_to_delete: list[str] = []
+                for mention in dup_mentions:
+                    episode_uuid = mention.source_node_uuid
+                    if episode_uuid in survivor_episode_uuids:
+                        mentions_to_delete.append(mention.uuid)
+                    else:
+                        mention.target_node_uuid = survivor_uuid
+                        await mention.save(self.driver)
+                        survivor_episode_uuids.add(episode_uuid)
+                        episodes_relinked += 1
+                if mentions_to_delete:
+                    await Edge.delete_by_uuids(self.driver, mentions_to_delete)
+
+            # --- Label union and summary merge (computed even in dry_run) ---
+            labels_after = sorted(set(labels_after) | set(dup.labels))
+
+            existing_lines = set(summary_after.splitlines())
+            for line in (dup.summary or '').splitlines():
+                if line not in existing_lines:
+                    summary_after = (summary_after + '\n' + line).strip()
+                    existing_lines.add(line)
+
+            if not dry_run:
+                survivor.labels = labels_after
+                survivor.summary = summary_after
+                await survivor.save(self.driver)
+                await Node.delete_by_uuids(self.driver, [dup.uuid])
+
+            merged_count += 1
+
+        return MergeEntitiesResult(
+            survivor_uuid=survivor_uuid,
+            merged_count=merged_count,
+            edges_rewired=edges_rewired,
+            episodes_relinked=episodes_relinked,
+            labels_after=labels_after,
+            summary_after=summary_after,
+        )
+
+    async def merge_entities_batch(
+        self,
+        merges: list[MergeRequest],
+        dry_run: bool = False,
+    ) -> list[MergeEntitiesResult]:
+        """Merge multiple sets of duplicate entities in sequence.
+
+        Each merge in the list is processed independently. If one merge fails,
+        successful merges already committed are not rolled back; the failed entry
+        receives an MergeEntitiesResult with error set and merged_count=0.
+
+        Args:
+            merges: List of MergeRequest objects, each specifying a survivor_uuid
+                and duplicate_uuids to collapse into it.
+            dry_run: If True, no writes are made for any merge in the batch.
+
+        Returns:
+            One MergeEntitiesResult per entry in merges, in the same order.
+        """
+        results: list[MergeEntitiesResult] = []
+        for req in merges:
+            try:
+                result = await self.merge_entities(
+                    survivor_uuid=req.survivor_uuid,
+                    duplicate_uuids=req.duplicate_uuids,
+                    dry_run=dry_run,
+                )
+            except Exception as exc:
+                result = MergeEntitiesResult(
+                    survivor_uuid=req.survivor_uuid,
+                    merged_count=0,
+                    edges_rewired=0,
+                    episodes_relinked=0,
+                    labels_after=[],
+                    summary_after='',
+                    error=str(exc),
+                )
+            results.append(result)
+        return results

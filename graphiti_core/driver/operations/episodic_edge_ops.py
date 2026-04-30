@@ -76,3 +76,10 @@ class EpisodicEdgeOperations(ABC):
         limit: int | None = None,
         uuid_cursor: str | None = None,
     ) -> list[EpisodicEdge]: ...
+
+    @abstractmethod
+    async def get_by_entity_uuid(
+        self,
+        executor: QueryExecutor,
+        entity_uuid: str,
+    ) -> list[EpisodicEdge]: ...

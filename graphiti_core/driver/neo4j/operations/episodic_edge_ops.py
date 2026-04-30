@@ -176,3 +176,18 @@ class Neo4jEpisodicEdgeOperations(EpisodicEdgeOperations):
             routing_='r',
         )
         return [_episodic_edge_from_record(r) for r in records]
+
+    async def get_by_entity_uuid(
+        self,
+        executor: QueryExecutor,
+        entity_uuid: str,
+    ) -> list[EpisodicEdge]:
+        query = (
+            """
+            MATCH (n:Episodic)-[e:MENTIONS]->(m:Entity {uuid: $entity_uuid})
+            RETURN
+            """
+            + EPISODIC_EDGE_RETURN
+        )
+        records, _, _ = await executor.execute_query(query, entity_uuid=entity_uuid, routing_='r')
+        return [_episodic_edge_from_record(r) for r in records]
