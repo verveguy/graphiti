@@ -21,6 +21,7 @@ the original intact.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -50,7 +51,7 @@ def _compress_params(params: Any) -> tuple[Any, bool]:
         return new_dict, changed
     if isinstance(params, list):
         # Already-decoded list: compress if it's a long numeric list
-        if len(params) > 64 and len(params) > 0 and isinstance(params[0], (int, float)):
+        if len(params) > 64 and isinstance(params[0], (int, float)):
             return encode_embedding(params), True
         return params, False
     if isinstance(params, str):
@@ -146,17 +147,10 @@ def compress_wal_dir(
         try:
             with os.fdopen(tmp_fd, 'w', encoding='utf-8') as tmp_f:
                 tmp_f.writelines(new_lines)
-            if keep_backup:
-                # Original already renamed; write to its former path
-                os.replace(tmp_path, wal_file)
-            else:
-                os.replace(tmp_path, wal_file)
+            os.replace(tmp_path, wal_file)
         except Exception:
-            # Clean up temp file on error
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
             raise
 
         print(f'  {wal_file.name}: saved {file_bytes_saved:,} bytes')
@@ -198,7 +192,7 @@ def main() -> None:
         sys.exit(1)
 
     if args.dry_run:
-        print(f'DRY RUN — no files will be modified')
+        print('DRY RUN — no files will be modified')
 
     print(f'Compressing WAL files in {args.wal_dir} ...')
 
