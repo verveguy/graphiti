@@ -383,7 +383,7 @@ class WalWriter:
             # Encode long numeric lists (embeddings) as f16: base64 strings.
             # Threshold > 64 catches all current and future embedding fields
             # without affecting short lists or non-numeric lists.
-            if len(value) > 64 and all(isinstance(x, (int, float)) for x in value):
+            if len(value) > 64 and all(isinstance(x, float) for x in value):
                 return encode_embedding(list(value))
             return [WalWriter._serialize_value(item) for item in value]
         elif isinstance(value, datetime):

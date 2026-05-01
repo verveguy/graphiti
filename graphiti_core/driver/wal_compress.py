@@ -50,14 +50,11 @@ def _compress_params(params: Any) -> tuple[Any, bool]:
                 changed = True
         return new_dict, changed
     if isinstance(params, list):
-        # Already-decoded list: compress if it's a long numeric list
-        if len(params) > 64 and isinstance(params[0], (int, float)):
+        # Already-decoded list: compress if it's a long float list (embeddings are always float)
+        if len(params) > 64 and all(isinstance(x, float) for x in params):
             return encode_embedding(params), True
         return params, False
     if isinstance(params, str):
-        # Already compressed — skip (idempotent)
-        if params.startswith('f16:') or params.startswith('f32:'):
-            return params, False
         return params, False
     return params, False
 
