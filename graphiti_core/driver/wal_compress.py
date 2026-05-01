@@ -62,35 +62,37 @@ def _compress_params(params: Any) -> tuple[Any, bool]:
     return params, False
 
 
-def _compress_line(line: str) -> tuple[str, int, bool]:
-    """Parse a JSONL line, compress its embedding params, return (new_line, bytes_saved, changed).
+def _compress_line(line: str) -> tuple[str, int, bool, bool]:
+    """Parse a JSONL line, compress its embedding params.
 
-    Returns the original line unchanged if it cannot be parsed or needs no changes.
+    Returns ``(new_line, bytes_saved, changed, is_corrupted)`` where
+    ``is_corrupted`` is True when the line contains non-empty content that
+    cannot be parsed as JSON (caller should log a warning).
     """
     stripped = line.strip()
     if not stripped:
-        return line, 0, False
+        return line, 0, False, False
 
     try:
         entry = json.loads(stripped)
     except json.JSONDecodeError:
-        return line, 0, False
+        return line, 0, False, True
 
     if not isinstance(entry, dict):
-        return line, 0, False
+        return line, 0, False, False
 
     params = entry.get('params', {})
     if not params:
-        return line, 0, False
+        return line, 0, False, False
 
     new_params, changed = _compress_params(params)
     if not changed:
-        return line, 0, False
+        return line, 0, False, False
 
     entry['params'] = new_params
     new_line = json.dumps(entry, ensure_ascii=False, separators=(',', ':')) + '\n'
     bytes_saved = len(line.encode('utf-8')) - len(new_line.encode('utf-8'))
-    return new_line, bytes_saved, True
+    return new_line, bytes_saved, True, False
 
 
 def compress_wal_dir(
@@ -111,42 +113,59 @@ def compress_wal_dir(
     total_bytes_saved = 0
 
     for wal_file in wal_files:
-        with open(wal_file, encoding='utf-8') as f:
-            lines = f.readlines()
-
-        new_lines = []
         file_changed = False
         file_bytes_saved = 0
 
-        for line in lines:
-            new_line, bytes_saved, changed = _compress_line(line)
-            new_lines.append(new_line)
-            if changed:
-                file_changed = True
-                file_bytes_saved += bytes_saved
-
-        if not file_changed:
-            logger.debug('No changes needed: %s', wal_file.name)
-            continue
-
-        total_files_modified += 1
-        total_bytes_saved += file_bytes_saved
-
         if dry_run:
+            with open(wal_file, encoding='utf-8') as f:
+                for line_num, line in enumerate(f, start=1):
+                    new_line, bytes_saved, changed, is_corrupted = _compress_line(line)
+                    if is_corrupted:
+                        logger.warning('Malformed JSON in %s line %d', wal_file.name, line_num)
+                    if changed:
+                        file_changed = True
+                        file_bytes_saved += bytes_saved
+
+            if not file_changed:
+                logger.debug('No changes needed: %s', wal_file.name)
+                continue
+
+            total_files_modified += 1
+            total_bytes_saved += file_bytes_saved
             print(f'  {wal_file.name}: would save {file_bytes_saved:,} bytes')
             continue
 
-        if keep_backup:
-            backup_path = wal_file.with_suffix('.jsonl.legacy')
-            wal_file.rename(backup_path)
-            logger.debug('Backed up %s → %s', wal_file.name, backup_path.name)
-
-        # Atomic write: temp file in the same directory so os.replace() is
-        # same-filesystem and therefore atomic on POSIX.
+        # Atomic write: stream source → temp file, then rename.
+        # Temp file in the same directory so os.replace() is same-filesystem
+        # and therefore atomic on POSIX.
         tmp_fd, tmp_path = tempfile.mkstemp(dir=wal_file.parent, suffix='.tmp')
         try:
-            with os.fdopen(tmp_fd, 'w', encoding='utf-8') as tmp_f:
-                tmp_f.writelines(new_lines)
+            with (
+                open(wal_file, encoding='utf-8') as src,
+                os.fdopen(tmp_fd, 'w', encoding='utf-8') as tmp_f,
+            ):
+                for line_num, line in enumerate(src, start=1):
+                    new_line, bytes_saved, changed, is_corrupted = _compress_line(line)
+                    if is_corrupted:
+                        logger.warning('Malformed JSON in %s line %d', wal_file.name, line_num)
+                    tmp_f.write(new_line)
+                    if changed:
+                        file_changed = True
+                        file_bytes_saved += bytes_saved
+
+            if not file_changed:
+                logger.debug('No changes needed: %s', wal_file.name)
+                os.unlink(tmp_path)
+                continue
+
+            total_files_modified += 1
+            total_bytes_saved += file_bytes_saved
+
+            if keep_backup:
+                backup_path = wal_file.with_suffix('.jsonl.legacy')
+                wal_file.rename(backup_path)
+                logger.debug('Backed up %s → %s', wal_file.name, backup_path.name)
+
             os.replace(tmp_path, wal_file)
         except Exception:
             with contextlib.suppress(OSError):
