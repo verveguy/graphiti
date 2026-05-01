@@ -164,7 +164,7 @@ def decode_embedding_param(value: Any) -> Any:
         if value.startswith('f16:'):
             try:
                 raw = base64.b64decode(value[4:])
-                return np.frombuffer(raw, dtype=_F16).astype(np.float32).tolist()
+                return np.frombuffer(raw, dtype=_F16).tolist()
             except ValueError as e:
                 raise ValueError(f'Failed to decode f16: embedding payload: {e}') from e
         if value.startswith('f32:'):
