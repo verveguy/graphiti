@@ -24,6 +24,11 @@ dependencies = [
 Homepage = "https://help.getzep.com/graphiti/graphiti/overview"
 Repository = "https://github.com/getzep/graphiti"
 
+[project.scripts]
+wal-replay = "graphiti_core.driver.wal_replay:main"
+wal-dump = "graphiti_core.driver.wal_dump:main"
+wal-compress = "graphiti_core.driver.wal_compress:main"
+
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.83.0"]
 groq = ["groq>=0.2.0"]
