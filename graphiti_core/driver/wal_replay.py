@@ -103,9 +103,15 @@ async def replay_wal(
                         continue
 
                     cypher = entry['cypher']
-                    params = entry.get('params', {})
-                    params = {k: decode_embedding_param(v) for k, v in params.items()}
+                    raw_params = entry.get('params', {})
                     event_db = entry.get('db', database)
+
+                    try:
+                        params = {k: decode_embedding_param(v) for k, v in raw_params.items()}
+                    except ValueError as e:
+                        logger.error('Decode error at seq=%d: %s', seq, e)
+                        errors += 1
+                        continue
 
                     if dry_run:
                         logger.debug('DRY RUN seq=%d db=%s: %s', seq, event_db, cypher[:80])
