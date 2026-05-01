@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 import pytest
 
 from graphiti_core.driver.wal import WalWriter
+from graphiti_core.driver.wal_replay_helpers import decode_embedding_param
 
 
 class TestIsMutation:
@@ -812,3 +813,71 @@ class TestChunkBatching:
         assert cyphers0 == ['CREATE (n:Before)'], f'Non-chunk file corrupted: {cyphers0}'
         # Second file must contain all chunk mutations
         assert len(cyphers1) == 3, f'Chunk file has wrong line count: {cyphers1}'
+
+
+class TestSerializeValueEmbeddingCompression:
+    """Test that _serialize_value compresses long numeric lists as f16: base64 strings."""
+
+    def test_long_float_list_produces_f16_string(self):
+        vec = [float(i) / 1000.0 for i in range(768)]
+        result = WalWriter._serialize_value(vec)
+        assert isinstance(result, str)
+        assert result.startswith('f16:')
+
+    def test_short_float_list_not_encoded(self):
+        vec = [0.1, 0.2, 0.3]
+        result = WalWriter._serialize_value(vec)
+        assert isinstance(result, list)
+
+    def test_exactly_64_elements_not_encoded(self):
+        """Threshold is > 64, so exactly 64 elements should NOT be encoded."""
+        vec = [float(i) for i in range(64)]
+        result = WalWriter._serialize_value(vec)
+        assert isinstance(result, list)
+
+    def test_65_elements_is_encoded(self):
+        """65 elements exceeds the threshold and SHOULD be encoded."""
+        vec = [float(i) for i in range(65)]
+        result = WalWriter._serialize_value(vec)
+        assert isinstance(result, str)
+        assert result.startswith('f16:')
+
+    def test_long_string_list_not_encoded(self):
+        """Long lists of strings must pass through unchanged (no compression)."""
+        strings = ['word'] * 100
+        result = WalWriter._serialize_value(strings)
+        assert isinstance(result, list)
+        assert result == strings
+
+    def test_roundtrip_within_float16_tolerance(self):
+        """Serialize → deserialize round-trip stays within float16 precision."""
+        vec = [float(i) / 1000.0 for i in range(768)]
+        encoded = WalWriter._serialize_value(vec)
+        assert isinstance(encoded, str)
+        decoded = decode_embedding_param(encoded)
+        assert isinstance(decoded, list)
+        assert len(decoded) == 768
+        for orig, dec in zip(vec, decoded):
+            assert abs(orig - dec) < 0.001
+
+    @pytest.mark.asyncio
+    async def test_log_mutation_embeds_f16_in_wal_file(self, tmp_path):
+        """End-to-end: embedding params are written as f16: strings in JSONL."""
+        wal_dir = tmp_path / 'wal'
+        wal_dir.mkdir()
+        writer = WalWriter(str(wal_dir))
+        vec = [float(i) / 1000.0 for i in range(768)]
+        await writer.log_mutation(
+            'MERGE (n:Entity {uuid: $uuid}) SET n.name_embedding = $name_embedding',
+            {'uuid': 'abc', 'name_embedding': vec},
+            'testdb',
+        )
+        await writer.close()
+
+        wal_files = list(wal_dir.glob('*.jsonl'))
+        assert len(wal_files) == 1
+        with open(wal_files[0]) as f:
+            entry = json.loads(f.readline())
+        assert entry['params']['uuid'] == 'abc'
+        assert isinstance(entry['params']['name_embedding'], str)
+        assert entry['params']['name_embedding'].startswith('f16:')

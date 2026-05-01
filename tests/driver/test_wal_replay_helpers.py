@@ -10,7 +10,15 @@ These tests target the helper directly from
 so they run without requiring the `real-ladybug` native module.
 """
 
-from graphiti_core.driver.wal_replay_helpers import strip_vecf32_wrappers
+import base64
+
+import numpy as np
+
+from graphiti_core.driver.wal_replay_helpers import (
+    decode_embedding_param,
+    encode_embedding,
+    strip_vecf32_wrappers,
+)
 
 
 class TestStripVecf32Wrappers:
@@ -83,3 +91,78 @@ class TestStripVecf32Wrappers:
         out = strip_vecf32_wrappers(cypher)
         assert 'vecf32' not in out
         assert 'r.fact_embedding = $fact_embedding' in out
+
+
+class TestEncodeEmbedding:
+    def test_returns_f16_prefix(self):
+        vec = [0.1, 0.2, 0.3] * 30  # 90 elements > 64 threshold
+        result = encode_embedding(vec)
+        assert result.startswith('f16:')
+
+    def test_base64_payload_is_valid(self):
+        vec = [float(i) / 100.0 for i in range(100)]
+        result = encode_embedding(vec)
+        payload = result[4:]
+        # Should decode cleanly without error
+        raw = base64.b64decode(payload)
+        assert len(raw) == 100 * 2  # 2 bytes per float16
+
+    def test_encode_768_dim(self):
+        vec = [float(i) / 1000.0 for i in range(768)]
+        result = encode_embedding(vec)
+        assert result.startswith('f16:')
+        raw = base64.b64decode(result[4:])
+        assert len(raw) == 768 * 2
+
+
+class TestDecodeEmbeddingParam:
+    def test_f16_roundtrip_within_tolerance(self):
+        """Encode → decode round-trip within float16 precision."""
+        vec = [float(i) / 1000.0 for i in range(768)]
+        encoded = encode_embedding(vec)
+        decoded = decode_embedding_param(encoded)
+        assert isinstance(decoded, list)
+        assert len(decoded) == 768
+        # float16 tolerance is ~0.001 for values in [0, 1)
+        for orig, dec in zip(vec, decoded):
+            assert abs(orig - dec) < 0.001
+
+    def test_legacy_list_passthrough(self):
+        """JSON-array (legacy) lists are returned unchanged."""
+        vec = [1.0, 2.0, 3.0]
+        assert decode_embedding_param(vec) is vec
+
+    def test_f32_decode(self):
+        """f32: prefix is decoded to list[float] correctly."""
+        vec = [0.1, 0.2, 0.3, 0.4, 0.5]
+        arr = np.array(vec, dtype=np.float32)
+        encoded = 'f32:' + base64.b64encode(arr.tobytes()).decode('ascii')
+        decoded = decode_embedding_param(encoded)
+        assert isinstance(decoded, list)
+        assert len(decoded) == 5
+        for orig, dec in zip(vec, decoded):
+            assert abs(orig - dec) < 1e-6
+
+    def test_non_embedding_string_passthrough(self):
+        """Non-embedding strings pass through unchanged."""
+        assert decode_embedding_param('hello') == 'hello'
+        assert decode_embedding_param('2026-01-01T00:00:00Z') == '2026-01-01T00:00:00Z'
+
+    def test_nested_dict_recursion(self):
+        """Dict values are recursed into; non-embedding values pass through."""
+        vec = [float(i) / 100.0 for i in range(100)]
+        encoded = encode_embedding(vec)
+        params = {'embedding': encoded, 'uuid': 'abc-123', 'count': 5}
+        result = decode_embedding_param(params)
+        assert result['uuid'] == 'abc-123'
+        assert result['count'] == 5
+        assert isinstance(result['embedding'], list)
+        assert len(result['embedding']) == 100
+
+    def test_returns_standard_python_floats(self):
+        """Decoded values are Python floats, not numpy scalars."""
+        vec = [0.1, 0.2, 0.3] * 30
+        encoded = encode_embedding(vec)
+        decoded = decode_embedding_param(encoded)
+        # Each element must be a Python float, not np.float32 or np.float16
+        assert all(type(x) is float for x in decoded)
