@@ -130,14 +130,18 @@ def expand_bulk_property_set(
 # ---------------------------------------------------------------------------
 
 
+_F16 = np.dtype('<f2')  # explicit little-endian float16 for WAL portability
+_F32 = np.dtype('<f4')  # explicit little-endian float32 for WAL portability
+
+
 def encode_embedding(vec: list[float]) -> str:
     """Encode a float list as a float16 base64 string for WAL storage.
 
     Returns a string of the form ``"f16:<base64>"`` where the base64 payload
-    is the raw bytes of the vector cast to float16 (little-endian, as numpy
-    default). Use ``decode_embedding_param`` to recover the original values.
+    is the raw bytes of the vector cast to little-endian float16.
+    Use ``decode_embedding_param`` to recover the original values.
     """
-    arr = np.array(vec, dtype=np.float16)
+    arr = np.array(vec, dtype=_F16)
     return 'f16:' + base64.b64encode(arr.tobytes()).decode('ascii')
 
 
@@ -146,8 +150,8 @@ def decode_embedding_param(value: Any) -> Any:
 
     Auto-detects the format of each value:
     - ``list`` → returned as-is (legacy JSON-array format)
-    - ``str`` starting with ``"f16:"`` → decoded from float16 bytes → ``list[float]``
-    - ``str`` starting with ``"f32:"`` → decoded from float32 bytes → ``list[float]``
+    - ``str`` starting with ``"f16:"`` → decoded from little-endian float16 bytes → ``list[float]``
+    - ``str`` starting with ``"f32:"`` → decoded from little-endian float32 bytes → ``list[float]``
     - ``dict`` → recurses into values
     - all other types → returned as-is
 
@@ -158,11 +162,17 @@ def decode_embedding_param(value: Any) -> Any:
         return value
     if isinstance(value, str):
         if value.startswith('f16:'):
-            raw = base64.b64decode(value[4:])
-            return np.frombuffer(raw, dtype=np.float16).astype(np.float32).tolist()
+            try:
+                raw = base64.b64decode(value[4:])
+                return np.frombuffer(raw, dtype=_F16).astype(np.float32).tolist()
+            except ValueError as e:
+                raise ValueError(f'Failed to decode f16: embedding payload: {e}') from e
         if value.startswith('f32:'):
-            raw = base64.b64decode(value[4:])
-            return np.frombuffer(raw, dtype=np.float32).tolist()
+            try:
+                raw = base64.b64decode(value[4:])
+                return np.frombuffer(raw, dtype=_F32).tolist()
+            except ValueError as e:
+                raise ValueError(f'Failed to decode f32: embedding payload: {e}') from e
         return value
     if isinstance(value, dict):
         return {k: decode_embedding_param(v) for k, v in value.items()}
