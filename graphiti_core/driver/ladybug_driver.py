@@ -51,7 +51,11 @@ from graphiti_core.driver.operations.has_episode_edge_ops import HasEpisodeEdgeO
 from graphiti_core.driver.operations.next_episode_edge_ops import NextEpisodeEdgeOperations
 from graphiti_core.driver.operations.saga_node_ops import SagaNodeOperations
 from graphiti_core.driver.operations.search_ops import SearchOperations
-from graphiti_core.driver.wal_replay_helpers import expand_bulk_property_set, strip_vecf32_wrappers
+from graphiti_core.driver.wal_replay_helpers import (
+    decode_embedding_param,
+    expand_bulk_property_set,
+    strip_vecf32_wrappers,
+)
 from graphiti_core.embedder.client import EMBEDDING_DIM
 
 logger = logging.getLogger(__name__)
@@ -496,7 +500,7 @@ def _deserialize_wal_params(params: dict[str, Any]) -> dict[str, Any]:
                 continue
             except (ValueError, TypeError):
                 pass  # Fall through to keep as string
-        converted[key] = value
+        converted[key] = decode_embedding_param(value)
     return converted
 
 

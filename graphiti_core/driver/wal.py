@@ -378,6 +378,13 @@ class WalWriter:
         if isinstance(value, dict):
             return {k: WalWriter._serialize_value(v) for k, v in value.items()}
         elif isinstance(value, (list, tuple)):
+            # Encode long numeric lists (embeddings) as f16: base64 strings.
+            # Threshold > 64 catches all current and future embedding fields
+            # without affecting short lists or non-numeric lists.
+            if len(value) > 64 and len(value) > 0 and isinstance(value[0], (int, float)):
+                from graphiti_core.driver.wal_replay_helpers import encode_embedding
+
+                return encode_embedding(list(value))
             return [WalWriter._serialize_value(item) for item in value]
         elif isinstance(value, datetime):
             return value.isoformat()

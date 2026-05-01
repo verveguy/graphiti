@@ -24,6 +24,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from graphiti_core.driver.wal_replay_helpers import decode_embedding_param
+
 if TYPE_CHECKING:
     from graphiti_core.driver.falkordb_driver import FalkorDriver
 
@@ -102,6 +104,7 @@ async def replay_wal(
 
                     cypher = entry['cypher']
                     params = entry.get('params', {})
+                    params = {k: decode_embedding_param(v) for k, v in params.items()}
                     event_db = entry.get('db', database)
 
                     if dry_run:
