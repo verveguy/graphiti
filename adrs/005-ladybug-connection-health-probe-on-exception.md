@@ -26,8 +26,17 @@ loudly is strongly preferable.
 
 ## Decision
 
-After **any** exception raised by `LadybugDriver.execute_query`, immediately
-probe the connection by executing `RETURN 1` on the same `AsyncConnection`.
+After any `Exception` raised by the underlying `self.client.execute()` call within
+`LadybugDriver.execute_query`, immediately probe the connection by executing
+`RETURN 1` on the same `AsyncConnection`.
+
+**Scope**: The probe covers the `except Exception` block that wraps
+`self.client.execute(cypher_query_, parameters=params)`. It does **not** fire for:
+- `BaseException` subclasses that are not `Exception` (e.g. `asyncio.CancelledError`)
+- Exceptions raised during result-processing after a successful execute call
+
+This scope matches the primary risk: connection corruption caused by a failed
+database-level operation surfacing through the `real_ladybug` C boundary.
 
 - If the probe succeeds: the connection is healthy. Re-raise the original
   exception unchanged. The caller can catch it, skip the chunk, and continue.
@@ -36,8 +45,8 @@ probe the connection by executing `RETURN 1` on the same `AsyncConnection`.
   `graphiti_core/errors.py`). Callers must treat the driver session as unusable
   and not issue further queries.
 
-The probe runs after **all** exceptions, not just those matching `unordered_map`
-in the message string. Reasons:
+The probe runs after **all** `Exception`-typed failures from the execute call,
+not just those matching `unordered_map` in the message string. Reasons:
 
 1. **Future-proofing**: KuzuDB C++ exception messages are internal implementation
    details and may change across versions. A string-match guard creates a

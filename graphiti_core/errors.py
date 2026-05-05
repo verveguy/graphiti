@@ -96,9 +96,11 @@ class NodeLabelValidationError(GraphitiError, ValueError):
 
 
 class LadybugConnectionError(GraphitiError):
-    """Raised when the LadybugDB connection is in an unhealthy state after a native exception.
+    """Raised when the LadybugDB connection health probe fails after an exception in execute_query.
 
-    Callers should treat the driver session as poisoned and not attempt further queries.
+    The probe (a lightweight `RETURN 1` query) runs after any exception from the underlying
+    database call. If the probe itself fails, the connection is treated as poisoned.
+    Callers should treat the driver session as unusable and not attempt further queries.
     """
 
     def __init__(self, message: str):
