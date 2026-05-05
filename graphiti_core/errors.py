@@ -93,3 +93,14 @@ class NodeLabelValidationError(GraphitiError, ValueError):
             f'alphanumeric characters or underscores: {label_list}'
         )
         super().__init__(self.message)
+
+
+class LadybugConnectionError(GraphitiError):
+    """Raised when the LadybugDB connection is in an unhealthy state after a native exception.
+
+    Callers should treat the driver session as poisoned and not attempt further queries.
+    """
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(self.message)
