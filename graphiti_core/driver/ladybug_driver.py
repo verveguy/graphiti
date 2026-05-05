@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import traceback
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +54,7 @@ from graphiti_core.driver.operations.saga_node_ops import SagaNodeOperations
 from graphiti_core.driver.operations.search_ops import SearchOperations
 from graphiti_core.driver.wal_replay_helpers import expand_bulk_property_set, strip_vecf32_wrappers
 from graphiti_core.embedder.client import EMBEDDING_DIM
+from graphiti_core.errors import LadybugConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -282,7 +284,26 @@ class LadybugDriver(GraphDriver):
             results = await self.client.execute(cypher_query_, parameters=params)
         except Exception as e:
             params = {k: (v[:5] if isinstance(v, list) else v) for k, v in params.items()}
-            logger.error(f'Error executing LadybugDB query: {e}\n{cypher_query_}\n{params}')
+            tb = traceback.format_exc()
+            is_cpp = 'unordered_map' in str(e) or 'key not found' in str(e)
+            origin = 'native C++ (real_ladybug)' if is_cpp else 'Python'
+            logger.error(
+                f'Error executing LadybugDB query ({origin} exception): {e}\n'
+                f'{cypher_query_}\n{params}\n{tb}'
+            )
+            # Probe the connection after any exception. If the probe itself fails,
+            # the connection is poisoned and callers must not issue further queries.
+            try:
+                probe_result = await self.client.execute('RETURN 1')
+                _close_query_result(probe_result)
+            except Exception as probe_exc:
+                logger.critical(
+                    f'LadybugDB connection health probe failed; '
+                    f'connection is poisoned: {probe_exc}'
+                )
+                raise LadybugConnectionError(
+                    f'LadybugDB connection is unhealthy after exception: {probe_exc}'
+                ) from probe_exc
             raise
 
         # Log mutation to WAL after successful execution, before checking results.
