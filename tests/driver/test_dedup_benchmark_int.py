@@ -8,21 +8,27 @@ Running the benchmark
 ---------------------
 The test is **skipped by default** unless ``GRAPHITI_BENCH_LADYBUG_DB`` is set.
 Set it to a path to a pre-seeded LadybugDB ``db/`` directory (the directory
-that contains ``graphiti.kz``)::
+that contains ``graphiti.kz``).
+
+**Important:** the pre-seeded database must already contain ≥ 50 000 entities
+under the group ID specified by ``GRAPHITI_BENCH_GROUP_ID`` (default: ``bench-group``).
+The scale check counts only entities in that group, because dedup latency is governed
+by per-group HNSW search cardinality, not total DB size. If your pre-seeded DB uses
+a different group ID (e.g. ``rfc-adr``), set ``GRAPHITI_BENCH_GROUP_ID`` to match::
 
     GRAPHITI_BENCH_LADYBUG_DB=/path/to/seeded/db \\
+    GRAPHITI_BENCH_GROUP_ID=rfc-adr \\
     OPENAI_API_KEY=sk-... \\
     pytest tests/driver/test_dedup_benchmark_int.py -v -s --timeout=600 -m benchmark
 
-The test will also skip if the configured database contains fewer than
-``BENCH_MIN_ENTITY_COUNT`` (50 000) entities — which avoids false passes on an
-under-populated fixture.
+The test will skip if the configured database contains fewer than
+``BENCH_MIN_ENTITY_COUNT`` (50 000) entities in the target group.
 
 Seeding the database
 --------------------
-If you do not have a pre-seeded database, you can create one by running the
-main graphiti ingest pipeline against a large corpus and pointing
+Run the main graphiti ingest pipeline against a large corpus and point
 ``GRAPHITI_BENCH_LADYBUG_DB`` at the resulting ``db/`` directory.
+Then set ``GRAPHITI_BENCH_GROUP_ID`` to the group_id used during ingestion.
 
 SLO
 ---
@@ -51,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 BENCH_MIN_ENTITY_COUNT = 50_000
 BENCH_P95_TARGET_SECONDS = 60.0
-BENCH_GROUP_ID = 'bench-group'
+BENCH_GROUP_ID = os.environ.get('GRAPHITI_BENCH_GROUP_ID', 'bench-group')
 BENCH_NUM_CHUNKS = 50
 
 # Simulated RFC/ADR style chunks — realistic enough to extract 10–20 entities each
@@ -179,7 +185,9 @@ async def test_add_episode_latency_at_scale(tmp_path):
 
     Skips if:
     - ``GRAPHITI_BENCH_LADYBUG_DB`` is not set in the environment, OR
-    - The database contains fewer than ``BENCH_MIN_ENTITY_COUNT`` entities.
+    - The group ``GRAPHITI_BENCH_GROUP_ID`` (default: ``bench-group``) contains
+      fewer than ``BENCH_MIN_ENTITY_COUNT`` entities in that database. Set
+      ``GRAPHITI_BENCH_GROUP_ID`` to the group_id of your pre-seeded corpus.
     """
     # -- Prerequisites -------------------------------------------------------
     pytest.importorskip(
@@ -201,10 +209,14 @@ async def test_add_episode_latency_at_scale(tmp_path):
 
     driver = LadybugDriver(db=db_path)
 
-    # Count entities in the database (across all groups) to verify scale
+    # Count entities in the target group to verify scale.
+    # Dedup latency is governed by per-group HNSW cardinality, not total DB size,
+    # so we count only within BENCH_GROUP_ID to avoid false passes on a pre-seeded
+    # DB where the large corpus lives under a different group_id.
     try:
         records, _, _ = await driver.execute_query(
-            'MATCH (n:Entity) RETURN count(n) AS cnt'
+            'MATCH (n:Entity) WHERE n.group_id = $group_id RETURN count(n) AS cnt',
+            {'group_id': BENCH_GROUP_ID},
         )
         entity_count = records[0]['cnt'] if records else 0
     except Exception as exc:
@@ -213,11 +225,12 @@ async def test_add_episode_latency_at_scale(tmp_path):
 
     if entity_count < BENCH_MIN_ENTITY_COUNT:
         pytest.skip(
-            f'Database at {db_path!r} contains only {entity_count:,} entities '
-            f'(need ≥ {BENCH_MIN_ENTITY_COUNT:,}) — populate the DB first'
+            f'Group {BENCH_GROUP_ID!r} in {db_path!r} contains only {entity_count:,} entities '
+            f'(need ≥ {BENCH_MIN_ENTITY_COUNT:,}). '
+            f'Set GRAPHITI_BENCH_GROUP_ID to match your pre-seeded group, or populate the DB first.'
         )
 
-    logger.info('Benchmark: %d entities found in %s', entity_count, db_path)
+    logger.info('Benchmark: %d entities in group %r at %s', entity_count, BENCH_GROUP_ID, db_path)
 
     # -- LLM + embedder setup ------------------------------------------------
     if openai_api_key:
@@ -232,17 +245,23 @@ async def test_add_episode_latency_at_scale(tmp_path):
         from graphiti_core.llm_client.config import LLMConfig
 
         # Embedder still requires OpenAI for text-embedding-* models;
-        # if only Anthropic key is present, use a voyageai embedder if available.
+        # if only Anthropic key is present, use a VoyageAI embedder if available.
+        voyage_key = os.environ.get('VOYAGE_API_KEY', '')
+        if not voyage_key:
+            pytest.skip(
+                'Anthropic key set but VOYAGE_API_KEY is missing — '
+                'benchmark requires OPENAI_API_KEY or VOYAGE_API_KEY for embeddings'
+            )
+            return
         try:
-            voyage_key = os.environ.get('VOYAGE_API_KEY', '')
             from graphiti_core.embedder.voyage import VoyageAIEmbedder, VoyageAIEmbedderConfig
 
             embedder = VoyageAIEmbedder(config=VoyageAIEmbedderConfig(api_key=voyage_key))
             logger.info('Benchmark: using VoyageAI embedder')
         except Exception:
             pytest.skip(
-                'Anthropic key set but no embedder available '
-                '(need OPENAI_API_KEY or VOYAGE_API_KEY)'
+                'Anthropic key set but voyageai package not available '
+                '(need OPENAI_API_KEY or install voyageai)'
             )
             return
 
@@ -290,34 +309,40 @@ async def test_add_episode_latency_at_scale(tmp_path):
 
         return latencies
 
-    # Pass 1: skip_llm_dedup=True — fastest; this is the SLO-asserted path
-    skip_config = DeduplicationConfig(skip_llm_dedup=True)
-    latencies_skip = await _run_pass('skip_llm_dedup', skip_config)
+    try:
+        # Pass 1: skip_llm_dedup=True — fastest; this is the SLO-asserted path
+        skip_config = DeduplicationConfig(skip_llm_dedup=True)
+        latencies_skip = await _run_pass('skip_llm_dedup', skip_config)
 
-    p50_skip = statistics.median(latencies_skip)
-    p95_skip = statistics.quantiles(latencies_skip, n=20)[18]  # 95th percentile
-    p99_skip = max(latencies_skip)
+        p50_skip = statistics.median(latencies_skip)
+        p95_skip = statistics.quantiles(latencies_skip, n=20)[18]  # 95th percentile
+        p99_skip = max(latencies_skip)
 
-    logger.info(
-        'BENCH skip_llm_dedup=True | n=%d | p50=%.2fs | p95=%.2fs | p99=%.2fs',
-        len(latencies_skip),
-        p50_skip,
-        p95_skip,
-        p99_skip,
-    )
+        logger.info(
+            'BENCH skip_llm_dedup=True | n=%d | p50=%.2fs | p95=%.2fs | p99=%.2fs',
+            len(latencies_skip),
+            p50_skip,
+            p95_skip,
+            p99_skip,
+        )
 
-    # Pass 2: cosine_min_score=0.85 — threshold-based; logged but not asserted
-    threshold_config = DeduplicationConfig(cosine_min_score=0.85)
-    latencies_threshold = await _run_pass('cosine_min_score=0.85', threshold_config)
+        # Pass 2: cosine_min_score=0.85 — threshold-based; logged but not asserted.
+        # Note: pass 2 runs after pass 1 has already written BENCH_NUM_CHUNKS episodes
+        # into BENCH_GROUP_ID, so the graph state is slightly larger. The pass-2
+        # numbers are directionally useful but not directly comparable to pass 1.
+        threshold_config = DeduplicationConfig(cosine_min_score=0.85)
+        latencies_threshold = await _run_pass('cosine_min_score=0.85', threshold_config)
 
-    p95_threshold = statistics.quantiles(latencies_threshold, n=20)[18]
-    logger.info(
-        'BENCH cosine_min_score=0.85 | n=%d | p50=%.2fs | p95=%.2fs | p99=%.2fs',
-        len(latencies_threshold),
-        statistics.median(latencies_threshold),
-        p95_threshold,
-        max(latencies_threshold),
-    )
+        p95_threshold = statistics.quantiles(latencies_threshold, n=20)[18]
+        logger.info(
+            'BENCH cosine_min_score=0.85 | n=%d | p50=%.2fs | p95=%.2fs | p99=%.2fs',
+            len(latencies_threshold),
+            statistics.median(latencies_threshold),
+            p95_threshold,
+            max(latencies_threshold),
+        )
+    finally:
+        await graphiti.close()
 
     # -- SLO assertion (skip_llm_dedup path only) ----------------------------
     assert p95_skip <= BENCH_P95_TARGET_SECONDS, (
