@@ -812,3 +812,31 @@ class TestChunkBatching:
         assert cyphers0 == ['CREATE (n:Before)'], f'Non-chunk file corrupted: {cyphers0}'
         # Second file must contain all chunk mutations
         assert len(cyphers1) == 3, f'Chunk file has wrong line count: {cyphers1}'
+
+
+class TestChunkCancelledError:
+    """B2: WalWriter.chunk() must reset _chunk_buffer on CancelledError."""
+
+    @pytest.fixture
+    def wal_dir(self, tmp_path):
+        return tmp_path / 'wal'
+
+    @pytest.mark.asyncio
+    async def test_chunk_buffer_reset_on_cancelled_error(self, wal_dir):
+        writer = WalWriter(wal_dir)
+        try:
+            try:
+                async with writer.chunk():
+                    raise asyncio.CancelledError()
+            except asyncio.CancelledError:
+                pass
+
+            assert writer._chunk_buffer is None, (
+                '_chunk_buffer should be None after CancelledError'
+            )
+
+            # A subsequent chunk() call must succeed without RuntimeError
+            async with writer.chunk():
+                pass
+        finally:
+            await writer.close()
