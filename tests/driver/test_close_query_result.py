@@ -117,9 +117,8 @@ class TestNativeExceptionHandling:
             probe_result = MagicMock()
             with patch.object(
                 driver.client, 'execute', side_effect=[cpp_exc, probe_result]
-            ):
-                with pytest.raises(RuntimeError, match='unordered_map::at: key not found'):
-                    await driver.execute_query('MATCH (n) RETURN n')
+            ), pytest.raises(RuntimeError, match='unordered_map::at: key not found'):
+                await driver.execute_query('MATCH (n) RETURN n')
         finally:
             await driver.close()
 
@@ -131,9 +130,8 @@ class TestNativeExceptionHandling:
             probe_exc = RuntimeError('connection is dead')
             with patch.object(
                 driver.client, 'execute', side_effect=[cpp_exc, probe_exc]
-            ):
-                with pytest.raises(LadybugConnectionError):
-                    await driver.execute_query('MATCH (n) RETURN n')
+            ), pytest.raises(LadybugConnectionError):
+                await driver.execute_query('MATCH (n) RETURN n')
         finally:
             await driver.close()
 
@@ -145,8 +143,7 @@ class TestNativeExceptionHandling:
             probe_result = MagicMock()
             with patch.object(
                 driver.client, 'execute', side_effect=[generic_exc, probe_result]
-            ):
-                with pytest.raises(RuntimeError, match='some internal error'):
-                    await driver.execute_query('MATCH (n) RETURN n')
+            ), pytest.raises(RuntimeError, match='some internal error'):
+                await driver.execute_query('MATCH (n) RETURN n')
         finally:
             await driver.close()
