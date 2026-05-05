@@ -645,6 +645,12 @@ async def replay_wal_ladybug(
     progress-drain loops) throughout the replay. See
     adrs/004-wal-replay-threading-boundary.md.
 
+    Thread-safety note: all logger.* calls inside the replay body execute from
+    the worker thread. Any logging handler that bridges into an asyncio.Queue
+    (e.g. WalProgressHandler) must use loop.call_soon_threadsafe() instead of
+    queue.put_nowait() to avoid corrupting the queue from outside the event loop
+    thread. See the cross-repo dependency section in ADR 004.
+
     Args:
         wal_dir: Directory containing WAL .jsonl files.
         db: LadybugDB database path.

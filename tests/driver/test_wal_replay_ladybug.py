@@ -61,10 +61,12 @@ class TestReplayWalLadybug:
     @pytest.mark.asyncio
     @pytest.mark.timeout(30)
     async def test_dry_run_does_not_block_event_loop(self, tmp_path):
-        """The event loop must remain schedulable while replay runs.
+        """The event loop must remain schedulable while replay is still running.
 
-        A concurrent coroutine that increments a counter with asyncio.sleep()
-        should advance during replay — not be starved until replay completes.
+        Replay is started as a background task. A short sleep gives replay time
+        to start but not finish. At that point the counter must have advanced
+        (proving the event loop ran concurrently) and replay must still be
+        in-progress (proving the check happened mid-replay, not post-completion).
         """
         wal_dir = tmp_path / 'wal'
         wal_dir.mkdir()
@@ -82,17 +84,25 @@ class TestReplayWalLadybug:
                 counter['value'] += 1
                 await asyncio.sleep(0.01)
 
-        task = asyncio.create_task(increment_while_running())
+        counter_task = asyncio.create_task(increment_while_running())
+        replay_task = asyncio.create_task(
+            replay_wal_ladybug(wal_dir, db=':memory:', dry_run=True)
+        )
         try:
-            count = await replay_wal_ladybug(wal_dir, db=':memory:', dry_run=True)
+            # Give replay time to start but not finish (50k JSON lines >> 50ms)
+            await asyncio.sleep(0.05)
+            assert counter['value'] > 0, (
+                'Counter never advanced while replay was in progress — event loop was blocked'
+            )
+            assert not replay_task.done(), (
+                'Replay finished in <50ms — WAL was too small to prove concurrent scheduling'
+            )
         finally:
             done.set()
-            await task
+            count = await replay_task
+            await counter_task
 
         assert count == 50_000
-        assert counter['value'] > 0, (
-            'Counter never advanced during replay — event loop was blocked'
-        )
 
     @pytest.mark.asyncio
     async def test_dry_run_empty_directory_returns_zero(self, tmp_path):
