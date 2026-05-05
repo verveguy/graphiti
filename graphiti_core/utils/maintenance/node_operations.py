@@ -18,6 +18,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from time import time
 from typing import Any, cast
 
@@ -65,6 +66,44 @@ NODE_DEDUP_CANDIDATE_LIMIT = 10
 # 0.3 floor replaces the old 0.6 (too aggressive for short names on bge-base-en-v1.5).
 # BM25 provides the recall safety net for true duplicates that fall below 0.3.
 NODE_DEDUP_COSINE_MIN_SCORE = 0.3
+
+
+@dataclass
+class DeduplicationConfig:
+    """Configuration for controlling node deduplication intensity during ingestion.
+
+    Use this to trade dedup quality for throughput when ingesting large graphs.
+
+    Attributes
+    ----------
+    skip_llm_dedup : bool
+        When True, skip the LLM deduplication step entirely. Only MinHash/LSH and
+        exact-name matching are used to identify duplicates. This is the fastest
+        option for bulk-seed workloads where entity names are distinctive.
+        Residual duplicates can be remediated post-hoc with ``merge_entities``.
+        Default: False (LLM dedup is performed as normal).
+    cosine_min_score : float
+        Minimum cosine similarity score for HNSW candidate retrieval. Raising this
+        value (e.g. from the default 0.3 to 0.85) reduces the candidate pool by
+        excluding semantically distant entities, which in turn shrinks the LLM
+        prompt and reduces API latency.
+
+        **Trade-off**: Entities whose true duplicate scores below this floor will
+        not appear as candidates and will therefore not be deduplicated. For the
+        default corpus (RFC/ADR), entity names are distinctive enough that 0.85
+        is safe; for general corpora, lower values are recommended.
+        Default: NODE_DEDUP_COSINE_MIN_SCORE (0.3).
+    candidate_limit : int
+        Maximum number of HNSW + BM25 candidates retrieved per extracted node.
+        Reducing this value (e.g. from the default 10 to 5) decreases the LLM
+        context size and API cost.
+        Default: NODE_DEDUP_CANDIDATE_LIMIT (10).
+    """
+
+    skip_llm_dedup: bool = False
+    cosine_min_score: float = field(default_factory=lambda: NODE_DEDUP_COSINE_MIN_SCORE)
+    candidate_limit: int = field(default_factory=lambda: NODE_DEDUP_CANDIDATE_LIMIT)
+
 
 NodeSummaryFilter = Callable[[EntityNode], Awaitable[bool]]
 
@@ -366,9 +405,18 @@ async def _collect_candidate_nodes(
     clients: GraphitiClients,
     extracted_nodes: list[EntityNode],
     existing_nodes_override: list[EntityNode] | None,
+    dedup_config: 'DeduplicationConfig | None' = None,
 ) -> list[list[EntityNode]]:
     """Search per extracted name and return ordered candidates for each extracted node."""
-    search_results = await _semantic_candidate_search(clients, extracted_nodes)
+    cosine_min_score = (
+        dedup_config.cosine_min_score if dedup_config is not None else NODE_DEDUP_COSINE_MIN_SCORE
+    )
+    candidate_limit = (
+        dedup_config.candidate_limit if dedup_config is not None else NODE_DEDUP_CANDIDATE_LIMIT
+    )
+    search_results = await _semantic_candidate_search(
+        clients, extracted_nodes, cosine_min_score, candidate_limit
+    )
 
     return [_merge_candidate_nodes(result, existing_nodes_override) for result in search_results]
 
@@ -387,11 +435,22 @@ def _build_dedup_search_filter(_node: EntityNode) -> SearchFilters:
 async def _semantic_candidate_search(
     clients: GraphitiClients,
     extracted_nodes: list[EntityNode],
+    cosine_min_score: float = NODE_DEDUP_COSINE_MIN_SCORE,
+    candidate_limit: int = NODE_DEDUP_CANDIDATE_LIMIT,
 ) -> list[list[EntityNode]]:
     """Run hybrid HNSW+BM25 candidate search per extracted node without label filtering.
 
     For each node, HNSW and BM25 results are fetched concurrently, merged HNSW-first,
-    deduplicated by UUID, and capped at NODE_DEDUP_CANDIDATE_LIMIT.
+    deduplicated by UUID, and capped at ``candidate_limit``.
+
+    Parameters
+    ----------
+    cosine_min_score:
+        Minimum cosine similarity for HNSW retrieval. Raising this value reduces
+        the candidate pool, which shrinks LLM prompt size at the cost of potentially
+        missing true duplicates with lower embedding similarity.
+    candidate_limit:
+        Maximum candidates returned per node (across HNSW + BM25 combined).
     """
     if not extracted_nodes:
         return []
@@ -414,15 +473,15 @@ async def _semantic_candidate_search(
                 query_vector,
                 search_filter,
                 [node.group_id],
-                NODE_DEDUP_CANDIDATE_LIMIT,
-                NODE_DEDUP_COSINE_MIN_SCORE,
+                candidate_limit,
+                cosine_min_score,
             ),
             node_fulltext_search(
                 clients.driver,
                 node.name.replace('\n', ' '),
                 search_filter,
                 [node.group_id],
-                NODE_DEDUP_CANDIDATE_LIMIT,
+                candidate_limit,
             ),
         )
         seen: set[str] = set()
@@ -431,7 +490,7 @@ async def _semantic_candidate_search(
             if result.uuid not in seen:
                 seen.add(result.uuid)
                 merged.append(result)
-                if len(merged) == NODE_DEDUP_CANDIDATE_LIMIT:
+                if len(merged) == candidate_limit:
                     break
         return merged
 
@@ -638,13 +697,24 @@ async def resolve_extracted_nodes(
     previous_episodes: list[EpisodicNode] | None = None,
     entity_types: dict[str, type[BaseModel]] | None = None,
     existing_nodes_override: list[EntityNode] | None = None,
+    dedup_config: DeduplicationConfig | None = None,
 ) -> tuple[list[EntityNode], dict[str, str], list[tuple[EntityNode, EntityNode]]]:
-    """Resolve nodes with semantic retrieval first, then deterministic and LLM dedup."""
+    """Resolve nodes with semantic retrieval first, then deterministic and LLM dedup.
+
+    Parameters
+    ----------
+    dedup_config:
+        Optional configuration to tune dedup intensity. When ``None``, defaults
+        are used (full LLM dedup, standard cosine floor 0.3, candidate limit 10).
+        Pass a :class:`DeduplicationConfig` instance to reduce LLM usage during
+        bulk ingestion. See :class:`DeduplicationConfig` for details and trade-offs.
+    """
     llm_client = clients.llm_client
     candidate_nodes_by_extracted = await _collect_candidate_nodes(
         clients,
         extracted_nodes,
         existing_nodes_override,
+        dedup_config,
     )
 
     state = DedupResolutionState(
@@ -676,7 +746,8 @@ async def resolve_extracted_nodes(
 
         state.unresolved_indices.append(idx)
 
-    if state.unresolved_indices:
+    skip_llm = dedup_config is not None and dedup_config.skip_llm_dedup
+    if state.unresolved_indices and not skip_llm:
         llm_candidate_nodes = _merge_candidate_nodes(
             [
                 candidate
@@ -693,6 +764,11 @@ async def resolve_extracted_nodes(
             episode,
             previous_episodes,
             entity_types,
+        )
+    elif state.unresolved_indices and skip_llm:
+        logger.debug(
+            'DEDUP_LLM_SKIP: skipping LLM dedup for %d unresolved nodes (skip_llm_dedup=True)',
+            len(state.unresolved_indices),
         )
 
     if not state.unresolved_indices and not any(candidate_nodes_by_extracted):

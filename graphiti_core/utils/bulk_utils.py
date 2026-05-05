@@ -62,6 +62,7 @@ from graphiti_core.utils.maintenance.graph_data_operations import (
     retrieve_episodes,
 )
 from graphiti_core.utils.maintenance.node_operations import (
+    DeduplicationConfig,
     extract_nodes,
     resolve_extracted_nodes,
 )
@@ -300,6 +301,7 @@ async def dedupe_nodes_bulk(
     extracted_nodes: list[list[EntityNode]],
     episode_tuples: list[tuple[EpisodicNode, list[EpisodicNode]]],
     entity_types: dict[str, type[BaseModel]] | None = None,
+    dedup_config: DeduplicationConfig | None = None,
 ) -> tuple[dict[str, list[EntityNode]], dict[str, str]]:
     """Resolve entity duplicates across an in-memory batch using a two-pass strategy.
 
@@ -308,6 +310,12 @@ async def dedupe_nodes_bulk(
     2. Re-run the deterministic similarity heuristics across the union of resolved nodes to catch
        duplicates that only co-occur inside this batch, emitting a canonical UUID map that callers
        can apply to edges and persistence.
+
+    Parameters
+    ----------
+    dedup_config:
+        Optional configuration to tune dedup intensity. See
+        :class:`~graphiti_core.utils.maintenance.node_operations.DeduplicationConfig`.
     """
 
     first_pass_results = await semaphore_gather(
@@ -318,6 +326,7 @@ async def dedupe_nodes_bulk(
                 episode_tuples[i][0],
                 episode_tuples[i][1],
                 entity_types,
+                dedup_config=dedup_config,
             )
             for i, nodes in enumerate(extracted_nodes)
         ]

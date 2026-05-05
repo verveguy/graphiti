@@ -102,6 +102,7 @@ from graphiti_core.utils.maintenance.graph_data_operations import (
     retrieve_episodes,
 )
 from graphiti_core.utils.maintenance.node_operations import (
+    DeduplicationConfig,
     _build_entity_types_context,
     extract_attributes_from_nodes,
     extract_nodes,
@@ -1043,6 +1044,7 @@ class Graphiti:
         custom_extraction_instructions: str | None = None,
         saga: str | SagaNode | None = None,
         saga_previous_episode_uuid: str | None = None,
+        dedup_config: DeduplicationConfig | None = None,
     ) -> AddEpisodeResults:
         """
         Process an episode and update the graph.
@@ -1090,6 +1092,25 @@ class Graphiti:
             query to find the most recent episode. Useful for efficiently adding multiple episodes
             to the same saga in sequence. The returned AddEpisodeResults.episode.uuid can be passed
             as this parameter for the next episode.
+        dedup_config : DeduplicationConfig | None
+            Optional. Configuration for node deduplication intensity. When ``None`` (default),
+            full LLM deduplication is used with standard thresholds. Provide a
+            :class:`~graphiti_core.DeduplicationConfig` to reduce LLM usage for bulk-seed
+            workloads where throughput is more important than perfect dedup quality.
+
+            Two key modes:
+
+            - ``DeduplicationConfig(skip_llm_dedup=True)`` — MinHash/LSH deterministic
+              matching only; no LLM calls during dedup. Fastest option. Residual duplicates
+              can be remediated post-hoc with ``merge_entities``.
+            - ``DeduplicationConfig(cosine_min_score=0.85)`` — Raise the HNSW retrieval
+              floor so only near-certain embedding matches are considered candidates.
+              Fewer candidates reach the LLM, reducing prompt size and latency.
+
+            **Trade-off**: Both modes may leave residual duplicates in the graph. For
+            corpora with distinctive entity names (e.g. RFC/ADR titles), this is acceptable.
+            Use ``merge_entities`` for post-hoc cleanup. See the "Performance at Scale"
+            section of the README for guidance.
 
         Returns
         -------
@@ -1182,6 +1203,7 @@ class Graphiti:
                     episode,
                     previous_episodes,
                     entity_types,
+                    dedup_config=dedup_config,
                 )
 
                 # Extract and resolve edges in parallel with attribute extraction
