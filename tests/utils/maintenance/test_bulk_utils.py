@@ -59,6 +59,7 @@ async def test_dedupe_nodes_bulk_reuses_canonical_nodes(monkeypatch):
         previous_episodes_arg,
         entity_types_arg,
         existing_nodes_override=None,
+        dedup_config=None,
     ):
         call_queue.append(existing_nodes_override)
 
@@ -146,6 +147,7 @@ async def test_dedupe_nodes_bulk_uuid_map_respects_direction(monkeypatch):
         previous_episodes_arg,
         entity_types_arg,
         existing_nodes_override=None,
+        dedup_config=None,
     ):
         if nodes_arg == [extracted_one]:
             return [canonical], {canonical.uuid: canonical.uuid}, []
