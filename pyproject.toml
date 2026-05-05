@@ -70,6 +70,9 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+markers = [
+    "benchmark: performance benchmark test (skipped by default; requires GRAPHITI_BENCH_LADYBUG_DB)",
+]
 
 [tool.ruff]
 line-length = 100
