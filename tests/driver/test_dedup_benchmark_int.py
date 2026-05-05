@@ -182,7 +182,7 @@ async def test_add_episode_latency_at_scale(tmp_path):
     - The database contains fewer than ``BENCH_MIN_ENTITY_COUNT`` entities.
     """
     # -- Prerequisites -------------------------------------------------------
-    real_ladybug = pytest.importorskip(
+    pytest.importorskip(
         'real_ladybug',
         reason='real_ladybug package not installed — skipping benchmark',
     )
@@ -250,7 +250,7 @@ async def test_add_episode_latency_at_scale(tmp_path):
         logger.info('Benchmark: using Anthropic LLM')
 
     # -- Graphiti setup ------------------------------------------------------
-    from graphiti_core import Graphiti, DeduplicationConfig
+    from graphiti_core import DeduplicationConfig, Graphiti
     from graphiti_core.nodes import EpisodeType
 
     graphiti = Graphiti(graph_driver=driver, llm_client=llm_client, embedder=embedder)
@@ -323,7 +323,7 @@ async def test_add_episode_latency_at_scale(tmp_path):
     assert p95_skip <= BENCH_P95_TARGET_SECONDS, (
         f'SLO BREACH: skip_llm_dedup p95={p95_skip:.2f}s exceeds '
         f'{BENCH_P95_TARGET_SECONDS}s target at {entity_count:,} entities. '
-        f'Latencies: {[f"{l:.2f}" for l in latencies_skip]}'
+        f'Latencies: {[f"{lat:.2f}" for lat in latencies_skip]}'
     )
 
     logger.info(
