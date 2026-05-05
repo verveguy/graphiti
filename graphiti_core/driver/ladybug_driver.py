@@ -500,58 +500,29 @@ def _deserialize_wal_params(params: dict[str, Any]) -> dict[str, Any]:
     return converted
 
 
-async def replay_wal_ladybug(
-    wal_dir: str | Path,
-    db: str,
-    from_seq: int = 0,
-    dry_run: bool = False,
-    batch_size: int = 10000,
-) -> int:
-    """Replay WAL files into a LadybugDB database.
+def _sync_replay_wal_ladybug(
+    db_handle: Any | None,
+    wal_files: list[Path],
+    from_seq: int,
+    dry_run: bool,
+    batch_size: int,
+) -> tuple[int, int, int]:
+    """Synchronous WAL replay body — runs in a worker thread via asyncio.to_thread().
 
-    Creates a LadybugDriver WITHOUT WAL (to avoid re-logging replayed
-    mutations), reads JSONL files in filename order, and executes each
-    mutation.
+    Owns the ladybug.Connection lifecycle. Returns (replayed, skipped, errors).
 
-    Uses BEGIN TRANSACTION / COMMIT batching for ~60x speedup over
-    per-mutation implicit transactions. On batch failure, uses binary-split
-    retry to isolate the failing mutation(s) while preserving all good
-    mutations. See LadybugDB/ladybug#386.
-
-    FalkorDB-era WAL entries (produced by wal_dump.py) wrap embedding
-    parameters in `vecf32($...)` which LadybugDB does not support; those
-    wrappers are stripped in-place before execution. Pure LadybugDB-era
-    entries are unaffected.
-
-    Args:
-        wal_dir: Directory containing WAL .jsonl files.
-        db: LadybugDB database path.
-        from_seq: Skip events with seq < from_seq (for partial replay).
-        dry_run: If True, parse and validate but don't execute.
-        batch_size: Mutations per transaction commit (default 10000).
-
-    Returns:
-        Number of mutations replayed.
+    db_handle must be a kuzu.Database instance created on the event loop before
+    this function is called. See adrs/004-wal-replay-threading-boundary.md.
     """
     import real_ladybug as ladybug
 
-    wal_path = Path(wal_dir)
-    if not wal_path.is_dir():
-        raise FileNotFoundError(f'WAL directory not found: {wal_path}')
-
-    wal_files = sorted(wal_path.glob('*.jsonl'))
-    if not wal_files:
-        logger.info('No WAL files found in %s', wal_path)
-        return 0
-
-    driver: LadybugDriver | None = None
-    conn = None
+    conn: Any | None = None
     replayed = 0
     skipped = 0
     errors = 0
 
     def _replay_batch(
-        conn: ladybug.Connection,
+        conn: Any,
         mutations: list[tuple[int, str, dict]],
     ) -> tuple[int, int]:
         """Replay a batch in a single transaction with binary-split retry."""
@@ -577,10 +548,8 @@ async def replay_wal_ladybug(
             return left_r + right_r, left_e + right_e
 
     try:
-        if not dry_run:
-            # No wal_dir — we don't want to re-log replayed mutations
-            driver = LadybugDriver(db=db)
-            conn = ladybug.Connection(driver.db)
+        if not dry_run and db_handle is not None:
+            conn = ladybug.Connection(db_handle)
             # NOTE: build_indices_and_constraints is called AFTER replay,
             # not before. LadybugDB HNSW indexes block in-place vector column
             # updates via MERGE...SET, so we bulk-load data first, then
@@ -590,13 +559,6 @@ async def replay_wal_ladybug(
 
         for wal_file in wal_files:
             logger.info('Replaying %s...', wal_file.name)
-
-            # Yield between files so UI progress updates smoothly. The
-            # between-batch yield (after COMMIT) is only every ~10s of
-            # wall time in fat files, which causes UI updates to arrive
-            # in 10-second bursts. Yielding per file keeps file-progress
-            # events draining at ~100ms intervals.
-            await asyncio.sleep(0)
 
             with open(wal_file, encoding='utf-8') as f:
                 for line_num, line in enumerate(f, 1):
@@ -624,11 +586,6 @@ async def replay_wal_ladybug(
                     if dry_run:
                         logger.debug('DRY RUN seq=%d: %s', seq, cypher[:80])
                         replayed += 1
-                        # Yield periodically during dry_run too — the JSON
-                        # parse + regex work can still block the event loop
-                        # on large WALs (e.g. 900k mutations).
-                        if replayed % batch_size == 0:
-                            await asyncio.sleep(0)
                         continue
 
                     if conn is None:
@@ -646,28 +603,97 @@ async def replay_wal_ladybug(
                             replayed,
                             errors,
                         )
-                        # Yield so other coroutines (e.g. progress-drain loops
-                        # listening on logging handlers) can run.  Without
-                        # this yield, replay_wal_ladybug pegs the event loop
-                        # and any concurrent `await` (in the calling service)
-                        # is starved until the replay completes.
-                        await asyncio.sleep(0)
 
         # Flush remaining batch
         if not dry_run and conn is not None and batch:
             batch_r, batch_e = _replay_batch(conn, batch)
             replayed += batch_r
             errors += batch_e
-            await asyncio.sleep(0)
 
     finally:
         if conn is not None:
             conn.close()
+
+    return replayed, skipped, errors
+
+
+async def replay_wal_ladybug(
+    wal_dir: str | Path,
+    db: str,
+    from_seq: int = 0,
+    dry_run: bool = False,
+    batch_size: int = 10000,
+) -> int:
+    """Replay WAL files into a LadybugDB database.
+
+    Creates a LadybugDriver WITHOUT WAL (to avoid re-logging replayed
+    mutations), reads JSONL files in filename order, and executes each
+    mutation.
+
+    Uses BEGIN TRANSACTION / COMMIT batching for ~60x speedup over
+    per-mutation implicit transactions. On batch failure, uses binary-split
+    retry to isolate the failing mutation(s) while preserving all good
+    mutations. See LadybugDB/ladybug#386.
+
+    FalkorDB-era WAL entries (produced by wal_dump.py) wrap embedding
+    parameters in `vecf32($...)` which LadybugDB does not support; those
+    wrappers are stripped in-place before execution. Pure LadybugDB-era
+    entries are unaffected.
+
+    The synchronous replay body runs in a worker thread via asyncio.to_thread()
+    so the event loop remains free to schedule concurrent coroutines (e.g.
+    progress-drain loops) throughout the replay. See
+    adrs/004-wal-replay-threading-boundary.md.
+
+    Args:
+        wal_dir: Directory containing WAL .jsonl files.
+        db: LadybugDB database path.
+        from_seq: Skip events with seq < from_seq (for partial replay).
+        dry_run: If True, parse and validate but don't execute.
+        batch_size: Mutations per transaction commit (default 10000).
+
+    Returns:
+        Number of mutations replayed.
+    """
+    wal_path = Path(wal_dir)
+    if not wal_path.is_dir():
+        raise FileNotFoundError(f'WAL directory not found: {wal_path}')
+
+    wal_files = sorted(wal_path.glob('*.jsonl'))
+    if not wal_files:
+        logger.info('No WAL files found in %s', wal_path)
+        return 0
+
+    driver: LadybugDriver | None = None
+    replayed = 0
+    skipped = 0
+    errors = 0
+
+    try:
+        if not dry_run:
+            # LadybugDriver is constructed on the event loop — its __init__
+            # creates a kuzu.AsyncConnection which must not be created from a
+            # worker thread. Only driver.db (the raw kuzu.Database handle)
+            # crosses into the thread. See adrs/004-wal-replay-threading-boundary.md.
+            driver = LadybugDriver(db=db)
+
+        replayed, skipped, errors = await asyncio.to_thread(
+            _sync_replay_wal_ladybug,
+            driver.db if driver is not None else None,
+            wal_files,
+            from_seq,
+            dry_run,
+            batch_size,
+        )
+
+    finally:
         if driver is not None:
-            if not dry_run and replayed > 0:
-                logger.info('Building indices and constraints on replayed data...')
-                await driver.build_indices_and_constraints()
-            await driver.close()
+            try:
+                if not dry_run and replayed > 0:
+                    logger.info('Building indices and constraints on replayed data...')
+                    await driver.build_indices_and_constraints()
+            finally:
+                await driver.close()
 
     logger.info(
         'Replay complete: %d replayed, %d skipped (seq < %d), %d errors',
