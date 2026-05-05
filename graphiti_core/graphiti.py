@@ -837,6 +837,7 @@ class Graphiti:
         entity_types: dict[str, type[BaseModel]] | None,
         excluded_entity_types: list[str] | None,
         custom_extraction_instructions: str | None = None,
+        dedup_config: DeduplicationConfig | None = None,
     ) -> tuple[
         dict[str, list[EntityNode]],
         dict[str, str],
@@ -856,7 +857,8 @@ class Graphiti:
 
         # Dedupe extracted nodes in memory
         nodes_by_episode, uuid_map = await dedupe_nodes_bulk(
-            self.clients, extracted_nodes_bulk, episode_context, entity_types
+            self.clients, extracted_nodes_bulk, episode_context, entity_types,
+            dedup_config=dedup_config,
         )
 
         return nodes_by_episode, uuid_map, extracted_edges_bulk
@@ -1312,6 +1314,7 @@ class Graphiti:
         edge_type_map: dict[tuple[str, str], list[str]] | None = None,
         custom_extraction_instructions: str | None = None,
         saga: str | SagaNode | None = None,
+        dedup_config: DeduplicationConfig | None = None,
     ) -> AddBulkEpisodeResults:
         """
         Process multiple episodes in bulk and update the graph.
@@ -1342,6 +1345,10 @@ class Graphiti:
             If a string is provided and a saga with this name already exists in the group, the episodes
             will be added to it. Otherwise, a new saga will be created. Sagas are connected to episodes
             via HAS_EPISODE edges, and consecutive episodes are linked via NEXT_EPISODE edges.
+        dedup_config : DeduplicationConfig | None
+            Optional. Configuration for node deduplication intensity. When ``None`` (default),
+            full LLM deduplication is used. Pass a :class:`~graphiti_core.DeduplicationConfig`
+            to reduce LLM usage for large bulk-seed workloads. See ``add_episode`` for details.
 
         Returns
         -------
@@ -1441,6 +1448,7 @@ class Graphiti:
                         entity_types,
                         excluded_entity_types,
                         custom_extraction_instructions,
+                        dedup_config=dedup_config,
                     )
 
                     # Create Episodic Edges
