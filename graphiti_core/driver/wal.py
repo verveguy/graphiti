@@ -284,9 +284,12 @@ class WalWriter:
         try:
             yield
         except BaseException:
-            # Discard buffer on any exception (including CancelledError)
-            async with self._lock:
-                self._chunk_buffer = None
+            # No lock needed: asyncio cooperative concurrency guarantees no await
+            # between here and the assignment, so CancelledError cannot preempt it.
+            # Using `async with self._lock` here would itself be an await point where
+            # CancelledError could fire, leaving _chunk_buffer non-None and breaking
+            # the next chunk() call. This relies on CPython's single-threaded event loop.
+            self._chunk_buffer = None
             raise
         else:
             # Flush buffer to disk on clean exit
