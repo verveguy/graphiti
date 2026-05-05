@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable
 from time import time
 from typing import Any, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from graphiti_core.edges import EntityEdge
 from graphiti_core.graphiti_types import GraphitiClients
@@ -192,9 +192,18 @@ async def _extract_nodes_single(
     context: dict,
 ) -> list[ExtractedEntity]:
     """Extract entities using a single LLM call with predefined entity types."""
-    llm_response = await _call_extraction_llm(llm_client, episode, context, freeform=False)
-    response_object = ExtractedEntities(**llm_response)
-    return response_object.extracted_entities
+    llm_response: dict = {}
+    try:
+        llm_response = await _call_extraction_llm(llm_client, episode, context, freeform=False)
+        response_object = ExtractedEntities(**llm_response)
+        return response_object.extracted_entities
+    except ValidationError as e:
+        logger.error(
+            f'Entity extraction validation failed: {e.errors()} | '
+            f'llm_response={str(llm_response)[:500]} | '
+            f'chunk={episode.content[:200]}'
+        )
+        return []
 
 
 async def _extract_nodes_single_freeform(
@@ -203,9 +212,18 @@ async def _extract_nodes_single_freeform(
     context: dict,
 ) -> list[ExtractedEntityFreeform]:
     """Extract entities using a single LLM call with freeform type classification."""
-    llm_response = await _call_extraction_llm(llm_client, episode, context, freeform=True)
-    response_object = ExtractedEntitiesFreeform(**llm_response)
-    return response_object.extracted_entities
+    llm_response: dict = {}
+    try:
+        llm_response = await _call_extraction_llm(llm_client, episode, context, freeform=True)
+        response_object = ExtractedEntitiesFreeform(**llm_response)
+        return response_object.extracted_entities
+    except ValidationError as e:
+        logger.error(
+            f'Entity extraction validation failed: {e.errors()} | '
+            f'llm_response={str(llm_response)[:500]} | '
+            f'chunk={episode.content[:200]}'
+        )
+        return []
 
 
 async def _call_extraction_llm(

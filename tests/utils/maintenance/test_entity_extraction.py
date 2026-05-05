@@ -26,6 +26,8 @@ from graphiti_core.utils.datetime_utils import utc_now
 from graphiti_core.utils.maintenance.node_operations import (
     _build_entity_types_context,
     _extract_entity_summaries_batch,
+    _extract_nodes_single,
+    _extract_nodes_single_freeform,
     _sanitize_label,
     extract_nodes,
     reclassify_entity,
@@ -900,3 +902,57 @@ class TestReprocessEntityTypes:
         log_messages = [r.message for r in caplog.records]
         assert any('Reclassified 1/1' in msg for msg in log_messages)
         assert any('Alice' in msg for msg in log_messages)
+
+
+class TestExtractionValidationFailure:
+    """Tests for graceful degradation when LLM returns invalid structured output."""
+
+    @pytest.mark.asyncio
+    async def test_freeform_validation_failure_returns_empty_list(self, caplog, monkeypatch):
+        """When LLM returns {} (missing required field), freeform extraction returns []."""
+        import graphiti_core.utils.maintenance.node_operations as node_ops
+
+        monkeypatch.setattr(
+            node_ops, '_call_extraction_llm', AsyncMock(return_value={})
+        )
+
+        llm_client = MagicMock()
+        episode = _make_episode(
+            content='Alice talked to Bob about the project timeline and deliverables.'
+        )
+
+        with caplog.at_level(logging.ERROR):
+            result = await _extract_nodes_single_freeform(llm_client, episode, context={})
+
+        assert result == []
+
+        error_logs = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert error_logs, 'Expected at least one ERROR log entry'
+        log_text = error_logs[0].message
+        assert 'extracted_entities' in log_text
+        assert 'missing' in log_text
+
+    @pytest.mark.asyncio
+    async def test_structured_validation_failure_returns_empty_list(self, caplog, monkeypatch):
+        """When LLM returns {} (missing required field), structured extraction returns []."""
+        import graphiti_core.utils.maintenance.node_operations as node_ops
+
+        monkeypatch.setattr(
+            node_ops, '_call_extraction_llm', AsyncMock(return_value={})
+        )
+
+        llm_client = MagicMock()
+        episode = _make_episode(
+            content='Alice talked to Bob about the project timeline and deliverables.'
+        )
+
+        with caplog.at_level(logging.ERROR):
+            result = await _extract_nodes_single(llm_client, episode, context={})
+
+        assert result == []
+
+        error_logs = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert error_logs, 'Expected at least one ERROR log entry'
+        log_text = error_logs[0].message
+        assert 'extracted_entities' in log_text
+        assert 'missing' in log_text
