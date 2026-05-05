@@ -956,3 +956,73 @@ class TestExtractionValidationFailure:
         log_text = error_logs[0].message
         assert 'extracted_entities' in log_text
         assert 'missing' in log_text
+
+    @pytest.mark.asyncio
+    async def test_freeform_client_raises_validation_error_returns_empty_list(
+        self, caplog, monkeypatch
+    ):
+        """Production path: when LLM client raises ValidationError, freeform extraction returns []."""
+        from pydantic import ValidationError
+
+        import graphiti_core.utils.maintenance.node_operations as node_ops
+        from graphiti_core.prompts.extract_nodes import ExtractedEntitiesFreeform
+
+        try:
+            ExtractedEntitiesFreeform(**{})
+        except ValidationError as exc:
+            validation_error = exc
+
+        monkeypatch.setattr(
+            node_ops, '_call_extraction_llm', AsyncMock(side_effect=validation_error)
+        )
+
+        llm_client = MagicMock()
+        episode = _make_episode(
+            content='Alice talked to Bob about the project timeline and deliverables.'
+        )
+
+        with caplog.at_level(logging.ERROR):
+            result = await _extract_nodes_single_freeform(llm_client, episode, context={})
+
+        assert result == []
+
+        error_logs = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert error_logs, 'Expected at least one ERROR log entry'
+        log_text = error_logs[0].message
+        assert 'extracted_entities' in log_text
+        assert 'missing' in log_text
+
+    @pytest.mark.asyncio
+    async def test_structured_client_raises_validation_error_returns_empty_list(
+        self, caplog, monkeypatch
+    ):
+        """Production path: when LLM client raises ValidationError, structured extraction returns []."""
+        from pydantic import ValidationError
+
+        import graphiti_core.utils.maintenance.node_operations as node_ops
+        from graphiti_core.prompts.extract_nodes import ExtractedEntities
+
+        try:
+            ExtractedEntities(**{})
+        except ValidationError as exc:
+            validation_error = exc
+
+        monkeypatch.setattr(
+            node_ops, '_call_extraction_llm', AsyncMock(side_effect=validation_error)
+        )
+
+        llm_client = MagicMock()
+        episode = _make_episode(
+            content='Alice talked to Bob about the project timeline and deliverables.'
+        )
+
+        with caplog.at_level(logging.ERROR):
+            result = await _extract_nodes_single(llm_client, episode, context={})
+
+        assert result == []
+
+        error_logs = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert error_logs, 'Expected at least one ERROR log entry'
+        log_text = error_logs[0].message
+        assert 'extracted_entities' in log_text
+        assert 'missing' in log_text
