@@ -560,7 +560,7 @@ class AnthropicClient(LLMClient):
                     if retry_count >= max_retries:
                         if isinstance(e, ValidationError):
                             logger.error(
-                                f'Validation error after {retry_count}/{max_retries} attempts: {e.errors()}'
+                                f'Validation error after {retry_count}/{max_retries} attempts: {e.errors()} | response={str(response)[:500]}'
                             )
                         else:
                             logger.error(f'Max retries ({max_retries}) exceeded. Last error: {e}')
@@ -582,7 +582,7 @@ class AnthropicClient(LLMClient):
                     # Common retry logic
                     retry_count += 1
                     messages.append(Message(role='user', content=error_context))
-                    error_detail = e.errors() if isinstance(e, ValidationError) else e
+                    error_detail = f'{e.errors()} | response={str(response)[:500]}' if isinstance(e, ValidationError) else e
                     logger.warning(
                         f'Retrying after error (attempt {retry_count}/{max_retries}): {error_detail}'
                     )
