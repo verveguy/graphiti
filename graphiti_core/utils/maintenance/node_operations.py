@@ -18,7 +18,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from time import time
 from typing import Any, cast
 
@@ -101,8 +101,8 @@ class DeduplicationConfig:
     """
 
     skip_llm_dedup: bool = False
-    cosine_min_score: float = field(default_factory=lambda: NODE_DEDUP_COSINE_MIN_SCORE)
-    candidate_limit: int = field(default_factory=lambda: NODE_DEDUP_CANDIDATE_LIMIT)
+    cosine_min_score: float = NODE_DEDUP_COSINE_MIN_SCORE
+    candidate_limit: int = NODE_DEDUP_CANDIDATE_LIMIT
 
 
 NodeSummaryFilter = Callable[[EntityNode], Awaitable[bool]]
@@ -405,14 +405,14 @@ async def _collect_candidate_nodes(
     clients: GraphitiClients,
     extracted_nodes: list[EntityNode],
     existing_nodes_override: list[EntityNode] | None,
-    dedup_config: 'DeduplicationConfig | None' = None,
+    dedup_config: DeduplicationConfig | None = None,
 ) -> list[list[EntityNode]]:
     """Search per extracted name and return ordered candidates for each extracted node."""
     cosine_min_score = (
-        dedup_config.cosine_min_score if dedup_config is not None else NODE_DEDUP_COSINE_MIN_SCORE
+        dedup_config.cosine_min_score if dedup_config else NODE_DEDUP_COSINE_MIN_SCORE
     )
     candidate_limit = (
-        dedup_config.candidate_limit if dedup_config is not None else NODE_DEDUP_CANDIDATE_LIMIT
+        dedup_config.candidate_limit if dedup_config else NODE_DEDUP_CANDIDATE_LIMIT
     )
     search_results = await _semantic_candidate_search(
         clients, extracted_nodes, cosine_min_score, candidate_limit
