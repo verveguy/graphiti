@@ -93,3 +93,16 @@ class NodeLabelValidationError(GraphitiError, ValueError):
             f'alphanumeric characters or underscores: {label_list}'
         )
         super().__init__(self.message)
+
+
+class LadybugConnectionError(GraphitiError):
+    """Raised when the LadybugDB connection health probe fails after an exception in execute_query.
+
+    The probe (a lightweight `RETURN 1` query) runs after any exception from the underlying
+    database call. If the probe itself fails, the connection is treated as poisoned.
+    Callers should treat the driver session as unusable and not attempt further queries.
+    """
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(self.message)

@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from graphiti_core.driver.ladybug_driver import LadybugDriver, _close_query_result
+from graphiti_core.errors import LadybugConnectionError
 
 
 class _FakeQR:
@@ -96,5 +97,53 @@ class TestExecuteQueryClosesResult:
             with patch.object(driver.client, 'execute', return_value=[]):
                 rows, _, _ = await driver.execute_query('RETURN 1')
             assert rows == []
+        finally:
+            await driver.close()
+
+
+class TestNativeExceptionHandling:
+    """Tests for A2/A3/A4: native C++ exception interception and connection health probe.
+
+    The actual graph-size trigger (~40K+ entities) cannot be reproduced in CI without
+    the operator's WAL files. These tests exercise the exception-handling code path by
+    injecting RuntimeError at the client.execute call site.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cpp_exception_reraises_when_probe_succeeds(self) -> None:
+        driver = LadybugDriver(db=':memory:')
+        try:
+            cpp_exc = RuntimeError('unordered_map::at: key not found')
+            probe_result = MagicMock()
+            with patch.object(
+                driver.client, 'execute', side_effect=[cpp_exc, probe_result]
+            ), pytest.raises(RuntimeError, match='unordered_map::at: key not found'):
+                await driver.execute_query('MATCH (n) RETURN n')
+        finally:
+            await driver.close()
+
+    @pytest.mark.asyncio
+    async def test_cpp_exception_raises_connection_error_when_probe_fails(self) -> None:
+        driver = LadybugDriver(db=':memory:')
+        try:
+            cpp_exc = RuntimeError('unordered_map::at: key not found')
+            probe_exc = RuntimeError('connection is dead')
+            with patch.object(
+                driver.client, 'execute', side_effect=[cpp_exc, probe_exc]
+            ), pytest.raises(LadybugConnectionError):
+                await driver.execute_query('MATCH (n) RETURN n')
+        finally:
+            await driver.close()
+
+    @pytest.mark.asyncio
+    async def test_generic_exception_also_probes_connection(self) -> None:
+        driver = LadybugDriver(db=':memory:')
+        try:
+            generic_exc = RuntimeError('some internal error')
+            probe_result = MagicMock()
+            with patch.object(
+                driver.client, 'execute', side_effect=[generic_exc, probe_result]
+            ), pytest.raises(RuntimeError, match='some internal error'):
+                await driver.execute_query('MATCH (n) RETURN n')
         finally:
             await driver.close()
