@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from graphiti_core.driver.wal_replay_helpers import encode_embedding
+
 logger = logging.getLogger(__name__)
 
 # Default max events per WAL file before rotation (~1MB per file at ~20KB/event).
@@ -378,6 +380,11 @@ class WalWriter:
         if isinstance(value, dict):
             return {k: WalWriter._serialize_value(v) for k, v in value.items()}
         elif isinstance(value, (list, tuple)):
+            # Encode long numeric lists (embeddings) as f16: base64 strings.
+            # Threshold > 64 catches all current and future embedding fields
+            # without affecting short lists or non-numeric lists.
+            if len(value) > 64 and all(isinstance(x, float) for x in value):
+                return encode_embedding(list(value))
             return [WalWriter._serialize_value(item) for item in value]
         elif isinstance(value, datetime):
             return value.isoformat()

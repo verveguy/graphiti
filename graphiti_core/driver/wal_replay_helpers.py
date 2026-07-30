@@ -7,7 +7,11 @@ like `real_ladybug` or `falkordb` at test collection time.
 
 from __future__ import annotations
 
+import base64
 import re
+from typing import Any
+
+import numpy as np
 
 # WAL entries produced by wal_dump.py (the one-time FalkorDB → WAL dump
 # path) wrap vector parameters in `vecf32($ident)` because that's the
@@ -110,3 +114,66 @@ def expand_bulk_property_set(
         del new_params[param_name]
 
     return new_cypher, new_params
+
+
+# ---------------------------------------------------------------------------
+# WAL embedding compression helpers
+#
+# Embedding vectors are encoded as prefix-tagged base64 strings in WAL records
+# to reduce file size (~65% smaller than JSON float arrays at float16).
+#
+# Write format (unconditional): "f16:<base64>" — float16 binary, base64-encoded.
+# Decode supports: "f16:", "f32:", and legacy JSON arrays (list[float]).
+#
+# FOREVER-DECODE INVARIANT: this decoder must handle all three formats
+# indefinitely — removing or narrowing it would break replay of older WAL trees.
+# ---------------------------------------------------------------------------
+
+
+_F16 = np.dtype('<f2')  # explicit little-endian float16 for WAL portability
+_F32 = np.dtype('<f4')  # explicit little-endian float32 for WAL portability
+
+
+def encode_embedding(vec: list[float]) -> str:
+    """Encode a float list as a float16 base64 string for WAL storage.
+
+    Returns a string of the form ``"f16:<base64>"`` where the base64 payload
+    is the raw bytes of the vector cast to little-endian float16.
+    Use ``decode_embedding_param`` to recover the original values.
+    """
+    arr = np.array(vec, dtype=_F16)
+    return 'f16:' + base64.b64encode(arr.tobytes()).decode('ascii')
+
+
+def decode_embedding_param(value: Any) -> Any:
+    """Decode a WAL parameter value, handling all embedding encoding formats.
+
+    Auto-detects the format of each value:
+    - ``list`` → returned as-is (legacy JSON-array format)
+    - ``str`` starting with ``"f16:"`` → decoded from little-endian float16 bytes → ``list[float]``
+    - ``str`` starting with ``"f32:"`` → decoded from little-endian float32 bytes → ``list[float]``
+    - ``dict`` → recurses into values
+    - all other types → returned as-is
+
+    This function satisfies the forever-decode invariant: it handles all three
+    formats and must continue to do so as long as WAL replay exists.
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        if value.startswith('f16:'):
+            try:
+                raw = base64.b64decode(value[4:])
+                return np.frombuffer(raw, dtype=_F16).tolist()
+            except ValueError as e:
+                raise ValueError(f'Failed to decode f16: embedding payload: {e}') from e
+        if value.startswith('f32:'):
+            try:
+                raw = base64.b64decode(value[4:])
+                return np.frombuffer(raw, dtype=_F32).tolist()
+            except ValueError as e:
+                raise ValueError(f'Failed to decode f32: embedding payload: {e}') from e
+        return value
+    if isinstance(value, dict):
+        return {k: decode_embedding_param(v) for k, v in value.items()}
+    return value

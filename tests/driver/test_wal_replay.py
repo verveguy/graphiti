@@ -15,10 +15,12 @@ limitations under the License.
 """
 
 import json
+from unittest.mock import patch
 
 import pytest
 
 from graphiti_core.driver.wal_replay import replay_wal
+from graphiti_core.driver.wal_replay_helpers import encode_embedding
 
 
 def _write_wal_file(wal_dir, filename, entries):
@@ -290,3 +292,87 @@ class TestReplayWalEndToEnd:
         # Replay only seq >= 3
         count = await replay_wal(wal_dir, from_seq=3, dry_run=True)
         assert count == 2
+
+
+class TestMixedWalEmbeddingDecode:
+    """Test that replay_wal decodes both legacy and f16: embedding params."""
+
+    @pytest.mark.asyncio
+    async def test_mixed_wal_dry_run_no_error(self, tmp_path):
+        """Mixed WAL (legacy list + f16: string) replays without errors in dry-run."""
+        wal_dir = tmp_path / 'wal'
+        wal_dir.mkdir()
+
+        vec_legacy = [float(i) / 1000.0 for i in range(768)]
+        vec_compressed = [float(i) / 500.0 for i in range(768)]
+        f16_encoded = encode_embedding(vec_compressed)
+
+        _write_wal_file(
+            wal_dir,
+            '20260324_000000_abc_0000.jsonl',
+            [
+                {
+                    'seq': 0,
+                    'ts': '2026-03-24T00:00:00Z',
+                    'db': 'db',
+                    'cypher': 'MERGE (n:Entity {uuid: $uuid}) SET n.name_embedding = $emb',
+                    'params': {'uuid': 'a', 'emb': vec_legacy},
+                },
+                {
+                    'seq': 1,
+                    'ts': '2026-03-24T00:00:01Z',
+                    'db': 'db',
+                    'cypher': 'MERGE (n:Entity {uuid: $uuid}) SET n.name_embedding = $emb',
+                    'params': {'uuid': 'b', 'emb': f16_encoded},
+                },
+            ],
+        )
+
+        count = await replay_wal(wal_dir, dry_run=True)
+        assert count == 2
+
+    @pytest.mark.asyncio
+    async def test_decode_called_on_all_params(self, tmp_path):
+        """decode_embedding_param is called on every WAL entry's params dict."""
+        wal_dir = tmp_path / 'wal'
+        wal_dir.mkdir()
+
+        vec = [float(i) / 1000.0 for i in range(768)]
+        f16_encoded = encode_embedding(vec)
+
+        _write_wal_file(
+            wal_dir,
+            '20260324_000000_abc_0000.jsonl',
+            [
+                {
+                    'seq': 0,
+                    'ts': '2026-03-24T00:00:00Z',
+                    'db': 'db',
+                    'cypher': 'MERGE (n:Entity {uuid: $uuid}) SET n.emb = $emb',
+                    'params': {'uuid': 'x', 'emb': f16_encoded},
+                },
+            ],
+        )
+
+        decoded_params = []
+        original_decode = __import__(
+            'graphiti_core.driver.wal_replay_helpers', fromlist=['decode_embedding_param']
+        ).decode_embedding_param
+
+        def capturing_decode(v):
+            result = original_decode(v)
+            decoded_params.append(result)
+            return result
+
+        with patch(
+            'graphiti_core.driver.wal_replay.decode_embedding_param', side_effect=capturing_decode
+        ):
+            await replay_wal(wal_dir, dry_run=True)
+
+        # Both 'uuid' and 'emb' should have been processed
+        assert len(decoded_params) == 2
+        # The decoded embedding should be a list of floats (not a raw f16: string)
+        embedding_results = [r for r in decoded_params if isinstance(r, list)]
+        assert len(embedding_results) == 1
+        assert len(embedding_results[0]) == 768
+        assert all(isinstance(x, float) for x in embedding_results[0])
