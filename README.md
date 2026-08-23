@@ -1,3 +1,32 @@
+> [!IMPORTANT]
+> **This fork is no longer developed. The work moved to
+> [liminis-context-graph](https://github.com/verveguy/liminis-context-graph).**
+>
+> This was my working fork of Graphiti, taken a fair way from upstream — 173 commits,
+> mostly pushing it toward a local-first design: a write-ahead log as the source of
+> truth, a LadybugDB driver, Anthropic prompt caching, batched entity and edge dedup,
+> and an in-process embedding cache.
+>
+> That work kept running into limits that were structural rather than incidental.
+> Graphiti is a framework over pluggable backends, and most of what I wanted — one
+> embedded engine, one wire protocol, a WAL that *is* the source of truth rather than a
+> layer bolted beside one — cuts across that design instead of fitting inside it. So I
+> stopped adapting and rebuilt it as a purpose-built engine:
+> **[liminis-context-graph](https://github.com/verveguy/liminis-context-graph)** — one
+> Rust binary holding a property graph, HNSW vector search and full-text search in a
+> single embedded process, with a plain-JSONL write-ahead log as the source of truth.
+> MIT.
+>
+> None of this is a knock on Graphiti, which is a good project and the origin of the
+> ideas I built on. **If you came here for Graphiti, go to
+> [getzep/graphiti](https://github.com/getzep/graphiti)** — it is actively maintained,
+> and this fork is 140 commits behind it.
+>
+> The branches and issues here stay as a record. A few of the open ones — #74, #75, #35 —
+> document precisely the limits that prompted the rewrite.
+
+---
+
 <p align="center">
   <a href="https://www.getzep.com/">
     <img src="https://github.com/user-attachments/assets/119c5682-9654-4257-8922-56b7cb8ffd73" width="150" alt="Zep Logo">
