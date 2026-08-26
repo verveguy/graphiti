@@ -26,6 +26,7 @@ from graphiti_core.utils.maintenance.dedup_helpers import (
 )
 from graphiti_core.utils.maintenance.node_operations import (
     NODE_DEDUP_CANDIDATE_LIMIT,
+    DeduplicationConfig,
     _build_dedup_search_filter,
     _collect_candidate_nodes,
     _extract_entity_summaries_batch,
@@ -1243,3 +1244,147 @@ def test_create_entity_nodes_freeform_filter_not_skip():
     assert len(nodes) == 1
     assert nodes[0].name == 'Vis Service'
     assert set(nodes[0].labels) == {'Entity', 'Technology'}
+
+
+# ---------------------------------------------------------------------------
+# DeduplicationConfig tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_nodes_skip_llm_dedup_suppresses_llm_call(monkeypatch):
+    """With skip_llm_dedup=True, unresolved nodes are kept as-is and LLM is never called."""
+    clients, llm_generate = _make_clients()
+
+    # Provide a candidate that won't match deterministically (different name, no exact match)
+    candidate = EntityNode(name='Joseph', group_id='group', labels=['Entity'])
+    extracted = EntityNode(name='Joe', group_id='group', labels=['Entity'])
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations._semantic_candidate_search',
+        _semantic_candidates([[candidate]]),
+    )
+
+    config = DeduplicationConfig(skip_llm_dedup=True)
+    resolved, uuid_map, _ = await resolve_extracted_nodes(
+        clients,
+        [extracted],
+        episode=_make_episode(),
+        previous_episodes=[],
+        dedup_config=config,
+    )
+
+    # Node should be kept as a new entity (no LLM to resolve)
+    assert resolved[0].uuid == extracted.uuid
+    assert uuid_map[extracted.uuid] == extracted.uuid
+    llm_generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_nodes_skip_llm_dedup_still_resolves_exact_matches(monkeypatch):
+    """With skip_llm_dedup=True, deterministic exact matches are still resolved."""
+    clients, llm_generate = _make_clients()
+
+    candidate = EntityNode(name='Alice Smith', group_id='group', labels=['Entity'])
+    extracted = EntityNode(name='Alice Smith', group_id='group', labels=['Entity'])
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations._semantic_candidate_search',
+        _semantic_candidates([[candidate]]),
+    )
+
+    config = DeduplicationConfig(skip_llm_dedup=True)
+    resolved, uuid_map, _ = await resolve_extracted_nodes(
+        clients,
+        [extracted],
+        episode=_make_episode(),
+        previous_episodes=[],
+        dedup_config=config,
+    )
+
+    # Exact match should be resolved even without LLM
+    assert resolved[0].uuid == candidate.uuid
+    assert uuid_map[extracted.uuid] == candidate.uuid
+    llm_generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_semantic_candidate_search_uses_custom_cosine_min_score(monkeypatch):
+    """_semantic_candidate_search passes cosine_min_score to node_similarity_search."""
+    captured_min_scores: list[float] = []
+
+    async def fake_similarity_search(driver, vector, search_filter, group_ids, limit, min_score):
+        captured_min_scores.append(min_score)
+        return []
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_similarity_search',
+        fake_similarity_search,
+    )
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_fulltext_search',
+        AsyncMock(return_value=[]),
+    )
+
+    clients, _ = _make_clients()
+    clients.embedder.create_batch = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
+
+    extracted = EntityNode(name='Test', group_id='group', labels=['Entity'])
+    await _semantic_candidate_search(clients, [extracted], cosine_min_score=0.85)
+
+    assert len(captured_min_scores) == 1
+    assert captured_min_scores[0] == pytest.approx(0.85)
+
+
+@pytest.mark.asyncio
+async def test_semantic_candidate_search_uses_custom_candidate_limit(monkeypatch):
+    """_semantic_candidate_search caps merged results at the custom candidate_limit."""
+    hnsw_nodes = [
+        EntityNode(name=f'H{i}', group_id='group', labels=['Entity']) for i in range(10)
+    ]
+    bm25_nodes = [
+        EntityNode(name=f'B{i}', group_id='group', labels=['Entity']) for i in range(10)
+    ]
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_similarity_search',
+        AsyncMock(return_value=hnsw_nodes),
+    )
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.node_fulltext_search',
+        AsyncMock(return_value=bm25_nodes),
+    )
+
+    clients, _ = _make_clients()
+    clients.embedder.create_batch = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
+
+    extracted = EntityNode(name='Test', group_id='group', labels=['Entity'])
+    results = await _semantic_candidate_search(clients, [extracted], candidate_limit=5)
+
+    assert len(results[0]) == 5
+
+
+@pytest.mark.asyncio
+async def test_dedup_config_defaults_behave_as_before(monkeypatch):
+    """Passing DeduplicationConfig() with defaults is identical to passing None."""
+    clients, llm_generate = _make_clients()
+
+    candidate = EntityNode(name='Joseph', group_id='group', labels=['Entity'])
+    extracted = EntityNode(name='Joe', group_id='group', labels=['Entity'])
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations._semantic_candidate_search',
+        _semantic_candidates([[candidate]]),
+    )
+
+    llm_generate.return_value = {'entity_resolutions': [{'id': 0, 'name': 'Joe', 'duplicate_candidate_id': -1}]}
+
+    # With explicit defaults config, LLM should still be called for ambiguous nodes
+    config = DeduplicationConfig()
+    resolved, _, _ = await resolve_extracted_nodes(
+        clients,
+        [extracted],
+        episode=_make_episode(),
+        previous_episodes=[],
+        dedup_config=config,
+    )
+
+    assert resolved[0].uuid == extracted.uuid
+    llm_generate.assert_awaited_once()

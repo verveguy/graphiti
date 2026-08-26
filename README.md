@@ -441,6 +441,105 @@ order. Existing code that reads `labels[0]` as a stable anchor continues to work
 > **Note:** A `suggest_duplicates → human review → merge_entities` end-to-end example will be added
 > in a future release once `suggest_duplicates` is implemented.
 
+## Performance at Scale
+
+### Deduplication latency at 50K+ entities
+
+When a single `group_id` accumulates 50 000 or more entities, the node deduplication step inside
+`add_episode` can become slow:
+
+- Each extracted entity triggers a parallel HNSW vector search **and** a BM25 full-text search
+  against all entities in the group.
+- Ambiguous candidates that aren't resolved by exact-name or MinHash/LSH matching are sent to the
+  LLM in a single batched call. At large cardinality, more candidates are ambiguous, and the LLM
+  prompt grows proportionally.
+- On LadybugDB, the HNSW `DELETE→CREATE` write pattern (required because HNSW-indexed columns
+  cannot be updated in place) adds further per-entity write cost that grows with graph size.
+
+The result is a non-linear cost curve: dedup that took ~2 s per chunk at 5K entities can exceed
+5 minutes per chunk at 80K+ entities.
+
+### DeduplicationConfig — bulk-seed mode
+
+`add_episode` accepts an optional `dedup_config` parameter that lets you trade dedup quality for
+throughput:
+
+```python
+from graphiti_core import Graphiti, DeduplicationConfig
+
+# Mode 1: skip LLM dedup entirely — MinHash/LSH deterministic matching only
+#   Fastest option for bulk ingestion where entity names are distinctive.
+#   SLO: p95 ≤ 60 s at 50K+ entities (subject to DB write latency).
+result = await graphiti.add_episode(
+    name='chunk-001',
+    episode_body=content,
+    source_description='RFC/ADR document',
+    reference_time=reference_time,
+    group_id='rfc-adr',
+    dedup_config=DeduplicationConfig(skip_llm_dedup=True),
+)
+
+# Mode 2: raise the HNSW cosine floor — fewer candidates reach the LLM
+#   Reduces prompt size and LLM latency without skipping LLM entirely.
+#   Entities with cosine similarity below the floor are not considered as candidates.
+result = await graphiti.add_episode(
+    ...
+    dedup_config=DeduplicationConfig(cosine_min_score=0.85),
+)
+
+# Mode 3: combine both — smallest candidate pool, no LLM calls
+result = await graphiti.add_episode(
+    ...
+    dedup_config=DeduplicationConfig(skip_llm_dedup=True, cosine_min_score=0.85),
+)
+```
+
+`dedupe_nodes_bulk` (used in batch-ingest paths) accepts the same parameter:
+
+```python
+from graphiti_core.utils.bulk_utils import dedupe_nodes_bulk
+from graphiti_core import DeduplicationConfig
+
+nodes_by_ep, uuid_map = await dedupe_nodes_bulk(
+    clients,
+    extracted_nodes,
+    episode_tuples,
+    dedup_config=DeduplicationConfig(skip_llm_dedup=True),
+)
+```
+
+### Trade-offs
+
+| Config | LLM calls | Candidate pool | Dedup quality |
+|--------|-----------|----------------|---------------|
+| Default (`None`) | 1 per `add_episode` | Up to 10 per node | Highest |
+| `cosine_min_score=0.85` | 1 per `add_episode` (fewer nodes) | Smaller | Misses duplicates with cosine < 0.85 |
+| `skip_llm_dedup=True` | 0 | Up to 10 per node | Deterministic only (exact + MinHash/LSH) |
+
+**When to use bulk-seed mode:** Bulk-seed mode is appropriate when:
+- Entity names in your corpus are highly distinctive (e.g., RFC/ADR titles, proper nouns).
+- You can tolerate residual duplicates and plan to run `merge_entities` for post-hoc cleanup.
+- The alternative (a stalled or timed-out ingestion) is worse than imperfect dedup.
+
+**Post-hoc cleanup:** After a bulk seed with `skip_llm_dedup=True`, use `merge_entities` or
+`merge_entities_batch` to collapse any residual duplicates that deterministic matching missed.
+See [Cleaning up duplicate entities](#cleaning-up-duplicate-entities).
+
+### Running the benchmark
+
+A benchmark integration test ships in `tests/driver/test_dedup_benchmark_int.py`. It measures
+per-chunk `add_episode` wall time against a real LadybugDB instance pre-populated with 50K+
+entities. To run it:
+
+```bash
+GRAPHITI_BENCH_LADYBUG_DB=/path/to/seeded/db \
+OPENAI_API_KEY=sk-... \
+pytest tests/driver/test_dedup_benchmark_int.py -v -s \
+    --timeout=600 -m benchmark
+```
+
+The test is **skipped by default** when `GRAPHITI_BENCH_LADYBUG_DB` is absent.
+
 ## MCP Server
 
 The `mcp_server` directory contains a Model Context Protocol (MCP) server implementation for Graphiti. This server
